@@ -202,6 +202,8 @@ run() {
 pretty() { case "$1" in "$HOME"*) printf '~%s' "${1#"$HOME"}" ;; *) printf '%s' "$1" ;; esac; }
 expand() { case "$1" in "~") printf '%s' "$HOME" ;; "~/"*) printf '%s/%s' "$HOME" "${1#\~/}" ;; *) printf '%s' "$1" ;; esac; }
 port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+# Busy with something other than Narratarr (an update replaces a running Narratarr, so that's fine).
+port_taken() { port_busy "$1" && ! curl -fsS "http://127.0.0.1:$1/api/health" >/dev/null 2>&1; }
 json_str() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"; }
 
 wait_healthy() {
@@ -357,7 +359,7 @@ install_native() {
 
   local url="http://127.0.0.1:$PORT"
   if [ "$AUTOSTART" = yes ] && [ -n "$can_autostart" ]; then
-    port_busy "$PORT" && warn "Something is already using port $PORT; Narratarr may not be able to start."
+    port_taken "$PORT" && warn "Something is already using port $PORT; Narratarr may not be able to start."
     if [ "$can_autostart" = launchd ]; then run "Setting it to start when you log in" autostart_macos
     else run "Setting it to start when you log in" autostart_linux; fi
     run "Starting Narratarr" wait_healthy "$PORT"
