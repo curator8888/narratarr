@@ -294,8 +294,19 @@ autostart_macos() {
 </dict>
 </plist>
 EOF
-  launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/$(id -u)" "$plist"
+  local domain="gui/$(id -u)" i
+  launchctl bootout "$domain/$LABEL" >/dev/null 2>&1 || true
+  # bootout returns before launchd has finished stopping the old copy, and starting the
+  # new one too soon fails with "Bootstrap failed: 5: Input/output error". Wait, then retry.
+  for i in $(seq 1 20); do
+    launchctl print "$domain/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  for i in 1 2 3 4 5; do
+    launchctl bootstrap "$domain" "$plist" && return 0
+    sleep 1
+  done
+  return 1
 }
 
 autostart_linux() {
