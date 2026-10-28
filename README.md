@@ -104,10 +104,12 @@ curl -fsSL https://raw.githubusercontent.com/narratarr/narratarr/main/install.sh
 
 It asks a few friendly questions: Docker or native, where your books should go, and whether Narratarr should start when you log in. Then it does the rest. If needed it installs [uv](https://docs.astral.sh/uv/) first (it asks before doing so). uv brings its own Python, so nothing else on your system changes.
 
-<p align="center">
-  <img src="docs/images/installer-menu.svg" alt="The installer asking whether to install natively or with Docker" width="49%">
-  <img src="docs/images/installer-done.svg" alt="The installer after a finished install" width="49%">
-</p>
+<table>
+<tr>
+<td width="50%" valign="top"><sub><b>Pick how to run it</b> (arrow keys, enter)</sub><br><br><img src="docs/images/installer-menu.svg" alt="The installer asking whether to install natively or with Docker"></td>
+<td width="50%" valign="top"><sub><b>…and a few steps later</b></sub><br><br><img src="docs/images/installer-done.svg" alt="The installer after a finished install"></td>
+</tr>
+</table>
 
 <details>
 <summary><b>Installer options</b> (for scripts and servers)</summary>
