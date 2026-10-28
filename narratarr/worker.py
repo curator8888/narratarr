@@ -5,6 +5,9 @@ For each queued book:
   caching     - hand the magnet to Real-Debrid and wait for it to finish on their side
   downloading - unrestrict each link and stream the files to a temp folder
   organizing  - unzip, move into the library, add cover/description, notify Audiobookshelf
+
+Usenet releases (from Prowlarr) skip Real-Debrid: the NZB goes to SABnzbd, and
+once SABnzbd has downloaded and unpacked it the files are moved into the library.
 """
 
 from __future__ import annotations
@@ -21,7 +24,9 @@ import httpx
 
 from . import config, db
 from .realdebrid import DEAD, RealDebrid, RealDebridError
-from .sources import Details, get_source
+from .sabnzbd import SABnzbd, SABnzbdError
+from .sources import Details, ProwlarrError, get_source
+from .sources.prowlarr import fetch
 
 log = logging.getLogger("narratarr.worker")
 
@@ -51,6 +56,27 @@ def destination(book: dict, settings: config.Settings) -> Path:
     if root not in dest.parents:
         raise ValueError("Folder template points outside the library folder")
     return dest
+
+
+def sab_path(storage: str, settings: config.Settings) -> Path:
+    """Translate a folder as SABnzbd sees it into one Narratarr can open (e.g. across containers)."""
+    remote, local = settings.sabnzbd_remote_path.rstrip("/\\"), settings.sabnzbd_local_path.rstrip("/\\")
+    if remote and local and storage.startswith(remote) and storage[len(remote):][:1] in ("", "/", "\\"):
+        storage = local + storage[len(remote):].replace("\\", "/")
+    return Path(storage)
+
+
+def take(src: Path, into: Path) -> None:
+    """Move a finished download (a folder or a single file) into our temp folder."""
+    if src.is_file():
+        shutil.move(str(src), str(into / src.name))
+        return
+    for item in src.iterdir():
+        shutil.move(str(item), str(into / item.name))
+    try:
+        src.rmdir()
+    except OSError:
+        pass  # something else is still in there; leave it be
 
 
 def extract_zip(archive: Path, into: Path) -> None:
@@ -122,7 +148,9 @@ class Worker:
             await self.process(book_id)
         except asyncio.CancelledError:
             raise
-        except (RealDebridError, httpx.HTTPError, ValueError, OSError, zipfile.BadZipFile) as e:
+        except (
+            RealDebridError, SABnzbdError, ProwlarrError, httpx.HTTPError, ValueError, OSError, zipfile.BadZipFile
+        ) as e:
             log.warning("Book %s failed: %s", book_id, e)
             db.update(book_id, status="failed", error=str(e) or type(e).__name__, speed=0, detail="")
         except Exception as e:
@@ -138,6 +166,8 @@ class Worker:
         source = get_source(book["source"])
         if source.delivery == "direct":
             await self._process_direct(book, source)
+        elif book["protocol"] == "usenet":
+            await self._process_usenet(book)
         else:
             await self._process_torrent(book, source)
 
@@ -182,18 +212,6 @@ class Worker:
     async def _process_torrent(self, book: dict, source) -> None:
         settings = config.load()
         book_id = book["id"]
-        if not book["info_hash"]:
-            db.update(book_id, detail="Reading book page…")
-            details = await source.details(book["source_url"])
-            if not details.info_hash:
-                raise ValueError("This listing doesn't show an info hash.")
-            db.update(book_id, info_hash=details.info_hash, trackers=details.trackers)
-            book = db.get(book_id)
-
-        magnet = Details(
-            url=book["source_url"], title=book["title"], info_hash=book["info_hash"], trackers=book["trackers"]
-        ).magnet()
-
         async with RealDebrid(settings.rd_api_key, transport=self._transport) as rd:
             torrent_id = book["rd_torrent_id"]
             if torrent_id:
@@ -202,7 +220,7 @@ class Worker:
                 except RealDebridError:
                     torrent_id = ""
             if not torrent_id:
-                torrent_id = await rd.add_magnet(magnet)
+                torrent_id = await self._add_to_rd(rd, book, source, settings)
                 db.update(book_id, rd_torrent_id=torrent_id)
 
             db.update(book_id, status="caching", detail="Sent to Real-Debrid")
@@ -224,6 +242,107 @@ class Worker:
                     log.info("Couldn't remove torrent %s from Real-Debrid", torrent_id)
 
         await self._finish(book, tmp, settings, rd_torrent_id="" if settings.delete_from_rd_after else torrent_id)
+
+    async def _add_to_rd(self, rd: RealDebrid, book: dict, source, settings: config.Settings) -> str:
+        book_id = book["id"]
+        if not book["info_hash"] and book["download_url"]:
+            # A Prowlarr release without a published info hash: fetch the .torrent (or magnet) itself.
+            db.update(book_id, detail="Fetching the torrent from Prowlarr…")
+            kind, payload = await fetch(
+                book["download_url"], settings.prowlarr_url, settings.prowlarr_api_key, self._transport
+            )
+            if kind == "torrent":
+                return await rd.add_torrent(payload)
+            if kind == "magnet":
+                return await rd.add_magnet(payload)
+            raise ProwlarrError("This is a Usenet release, not a torrent.")
+
+        if not book["info_hash"]:
+            db.update(book_id, detail="Reading book page…")
+            details = await source.details(book["source_url"])
+            if not details.info_hash:
+                raise ValueError("This listing doesn't show an info hash.")
+            db.update(book_id, info_hash=details.info_hash, trackers=details.trackers)
+            book = db.get(book_id)
+
+        magnet = Details(
+            url=book["source_url"], title=book["title"], info_hash=book["info_hash"], trackers=book["trackers"]
+        ).magnet()
+        return await rd.add_magnet(magnet)
+
+    async def _process_usenet(self, book: dict) -> None:
+        """Prowlarr Usenet releases: hand the NZB to SABnzbd, wait, then import what it unpacked."""
+        settings = config.load()
+        book_id = book["id"]
+        async with SABnzbd(settings.sabnzbd_url, settings.sabnzbd_api_key, transport=self._transport) as sab:
+            nzo_id = book["sab_nzo_id"]
+            if nzo_id and await sab.job(nzo_id) is None:
+                nzo_id = ""
+            if not nzo_id:
+                if not book["download_url"]:
+                    raise ValueError("This release has no NZB link. Search for it again.")
+                db.update(book_id, detail="Fetching the NZB from Prowlarr…")
+                kind, nzb = await fetch(
+                    book["download_url"], settings.prowlarr_url, settings.prowlarr_api_key, self._transport
+                )
+                if kind != "nzb":
+                    raise ProwlarrError("The indexer sent a torrent for this Usenet release.")
+                name = safe_name(f"{book['author']} - {book['title']}" if book["author"] else book["title"])
+                nzo_id = await sab.add_nzb(nzb, f"{name}.nzb", name, settings.sabnzbd_category)
+                db.update(book_id, sab_nzo_id=nzo_id)
+
+            db.update(book_id, status="downloading", progress=0, detail="Sent to SABnzbd")
+            storage = await self._wait_for_sab(sab, book_id, nzo_id)
+            folder = sab_path(storage, settings)
+            if not storage or not folder.exists():
+                raise ValueError(
+                    f"SABnzbd saved this book to {storage or 'a folder it did not name'}, but Narratarr can't see "
+                    "that folder. If they run in separate containers, give both the same downloads folder, or "
+                    "set the path mapping under SABnzbd in Settings."
+                )
+            tmp = self._fresh_tmp(book_id, settings)
+            await asyncio.to_thread(take, folder, tmp)
+            try:
+                await sab.forget(nzo_id)
+            except SABnzbdError:
+                log.info("Couldn't clear job %s from SABnzbd history", nzo_id)
+
+        await self._finish(book, tmp, settings, sab_nzo_id="")
+
+    async def _wait_for_sab(self, sab: SABnzbd, book_id: int, nzo_id: str) -> str:
+        """Poll SABnzbd until the job is done; returns the folder it saved to."""
+        while True:
+            job = await sab.job(nzo_id)
+            if job is None:
+                raise SABnzbdError("SABnzbd no longer has this download. It may have been removed there.")
+            status = job.get("status", "")
+            if job["stage"] == "queue":
+                speed = int(float(job.get("kbpersec") or 0) * 1024) if status == "Downloading" else 0
+                left = job.get("timeleft") or ""
+                label = "SABnzbd is paused" if job.get("paused") else {
+                    "Queued": "Queued in SABnzbd",
+                    "Paused": "Paused in SABnzbd",
+                    "Grabbing": "SABnzbd is reading the NZB…",
+                    "Fetching": "SABnzbd is reading the NZB…",
+                    "Propagating": "Waiting for the post to reach your Usenet server…",
+                }.get(status, f"Downloading in SABnzbd · {left} left" if speed and left else "Downloading in SABnzbd")
+                db.update(book_id, progress=float(job.get("percentage") or 0), speed=speed, detail=label)
+            elif status == "Completed":
+                return job.get("storage") or ""
+            elif status == "Failed":
+                reason = job.get("fail_message") or "no reason given"
+                raise SABnzbdError(f"SABnzbd couldn't finish this download: {reason}")
+            else:
+                label = {
+                    "QuickCheck": "SABnzbd is checking the files…",
+                    "Verifying": "SABnzbd is checking the files…",
+                    "Repairing": "SABnzbd is repairing the files…",
+                    "Extracting": "SABnzbd is unpacking…",
+                    "Moving": "SABnzbd is moving the files…",
+                    "Running": "SABnzbd is running its post-processing script…",
+                }.get(status, "SABnzbd is finishing up…")
+                db.update(book_id, progress=100, speed=0, detail=label)
+            await asyncio.sleep(POLL_SECONDS)
 
     async def _wait_for_rd(self, rd: RealDebrid, book_id: int, torrent_id: str) -> dict:
         started = time.monotonic()

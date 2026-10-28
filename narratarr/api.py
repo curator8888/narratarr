@@ -19,7 +19,8 @@ from pydantic import BaseModel
 
 from . import brave, config, db, media, search
 from .realdebrid import RealDebrid, RealDebridError
-from .sources import ORDER, all_sources, get_source, source_for_url
+from .sabnzbd import SABnzbd, SABnzbdError
+from .sources import ORDER, Prowlarr, ProwlarrError, all_sources, get_source, source_for_url
 from .worker import Worker
 
 STATIC = Path(__file__).parent / "static"
@@ -107,6 +108,7 @@ async def health():
 @app.get("/api/sources")
 async def sources():
     found = all_sources()
+    settings = config.load().public()
     return [
         {
             "name": name,
@@ -117,6 +119,7 @@ async def sources():
             "categories": [{"slug": c.slug, "name": c.name} for c in found[name].categories()],
         }
         for name in ORDER
+        if name != "prowlarr" or settings["prowlarr_configured"]
     ]
 
 
@@ -133,10 +136,14 @@ async def discover(q: str = "", category: str = "", page: int = 1, source: str =
             data = await search.brave_smart_search(
                 q.strip(), settings.brave_api_key, settings.abb_base_url, page, settings.smart_search
             )
+        elif q.strip() and src.name == "prowlarr":
+            data = await search.careful_search(src, q.strip(), settings.smart_search)
         elif q.strip():
             data = await search.smart_search(src, q.strip(), page, use_suggestions=settings.smart_search)
         else:
             data = (await src.latest(page, category or None)).to_dict()
+    except ProwlarrError as e:
+        raise HTTPException(502, str(e))
     except httpx.HTTPError as e:
         raise _source_error(e, src.label)
     except brave.BraveError as e:
@@ -161,6 +168,8 @@ async def details(url: str, source: str | None = None):
     src = _resolve(url, source)
     try:
         d = await src.details(url)
+    except ProwlarrError as e:
+        raise HTTPException(410, str(e))
     except httpx.HTTPError as e:
         raise _source_error(e, src.label)
     data = d.to_dict()
@@ -200,6 +209,8 @@ async def add_book(body: AddBook):
         return db.get(existing["id"])
     try:
         d = await source.details(body.url)
+    except ProwlarrError as e:
+        raise HTTPException(410, str(e))
     except httpx.HTTPError as e:
         raise _source_error(e, source.label)
     book = db.insert(
@@ -220,6 +231,10 @@ async def add_book(body: AddBook):
             "info_hash": d.info_hash,
             "trackers": d.trackers,
             "files": d.files,
+            "protocol": d.protocol,
+            "indexer": d.indexer,
+            "release": d.release,
+            "download_url": d.download_url,
             "status": "queued" if body.download else "wanted",
         }
     )
@@ -240,15 +255,30 @@ async def download(book_id: int):
     book = _get_or_404(book_id)
     if book["status"] in db.ACTIVE:
         return book
-    db.update(book_id, status="queued", error="", progress=0, detail="")
+    changes = {"sab_nzo_id": ""} if book["status"] == "failed" else {}  # a failed Usenet job starts over
+    db.update(book_id, status="queued", error="", progress=0, detail="", **changes)
     _worker().poke()
     return db.get(book_id)
 
 
+async def _drop_from_sabnzbd(book: dict) -> None:
+    """Stopping a Usenet download in Narratarr stops it in SABnzbd too."""
+    if not book["sab_nzo_id"] or book["status"] not in db.ACTIVE:
+        return
+    s = config.load()
+    try:
+        async with SABnzbd(s.sabnzbd_url, s.sabnzbd_api_key) as sab:
+            await sab.delete(book["sab_nzo_id"])
+    except SABnzbdError:
+        pass
+    db.update(book["id"], sab_nzo_id="")
+
+
 @app.post("/api/library/{book_id}/stop")
 async def stop(book_id: int):
-    _get_or_404(book_id)
+    book = _get_or_404(book_id)
     _worker().cancel(book_id)
+    await _drop_from_sabnzbd(book)
     db.update(book_id, status="wanted", speed=0, progress=0, detail="")
     return db.get(book_id)
 
@@ -257,6 +287,7 @@ async def stop(book_id: int):
 async def remove(book_id: int, delete_files: bool = False):
     book = _get_or_404(book_id)
     _worker().cancel(book_id)
+    await _drop_from_sabnzbd(book)
     if delete_files and book["path"]:
         root = Path(config.load().library_dir).expanduser().resolve()
         path = Path(book["path"]).resolve()
@@ -348,6 +379,25 @@ async def test_brave():
     except brave.BraveError as e:
         raise HTTPException(400, str(e))
     return {"results": len(res["items"])}
+
+
+@app.post("/api/settings/test-prowlarr")
+async def test_prowlarr():
+    s = config.load()
+    try:
+        return await Prowlarr(s.prowlarr_url, s.prowlarr_api_key).status()
+    except ProwlarrError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/settings/test-sabnzbd")
+async def test_sabnzbd():
+    s = config.load()
+    try:
+        async with SABnzbd(s.sabnzbd_url, s.sabnzbd_api_key) as sab:
+            return {"version": await sab.version()}
+    except SABnzbdError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/settings/test-rd")

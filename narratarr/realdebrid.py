@@ -57,6 +57,10 @@ class RealDebrid:
         data = await self._call("POST", "/torrents/addMagnet", data={"magnet": magnet})
         return data["id"]
 
+    async def add_torrent(self, torrent: bytes) -> str:
+        data = await self._call("PUT", "/torrents/addTorrent", content=torrent)
+        return data["id"]
+
     async def torrent_info(self, torrent_id: str) -> dict:
         return await self._call("GET", f"/torrents/info/{torrent_id}")
 

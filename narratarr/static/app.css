@@ -751,3 +751,8 @@ img { display: block; }
   .sources::-webkit-scrollbar { display: none; }
   .source { flex: none; padding: 9px 14px; }
 }
+
+@media (max-width: 860px) {
+  .input-row:not(:has(.btn)) { flex-direction: column; }
+  .input-row:not(:has(.btn)) .input { flex: none; }
+}

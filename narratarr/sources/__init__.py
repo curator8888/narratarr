@@ -2,15 +2,18 @@ from .. import config
 from .archive import ArchiveSource, librivox, oldtimeradio
 from .audiobookbay import AudiobookBay
 from .base import Category, Details, Listing, Page, Source
+from .prowlarr import Prowlarr, ProwlarrError
 
-ORDER = ("librivox", "oldtimeradio", "audiobookbay")
+ORDER = ("librivox", "oldtimeradio", "audiobookbay", "prowlarr")
 
 
 def all_sources() -> dict[str, Source]:
+    s = config.load()
     return {
-        "audiobookbay": AudiobookBay(config.load().abb_base_url),
+        "audiobookbay": AudiobookBay(s.abb_base_url),
         "librivox": librivox(),
         "oldtimeradio": oldtimeradio(),
+        "prowlarr": Prowlarr(s.prowlarr_url, s.prowlarr_api_key, s.prowlarr_categories),
     }
 
 
@@ -30,6 +33,6 @@ def source_for_url(url: str) -> Source | None:
 
 
 __all__ = [
-    "ArchiveSource", "AudiobookBay", "Category", "Details", "Listing", "Page", "Source",
+    "ArchiveSource", "AudiobookBay", "Category", "Details", "Listing", "Page", "Prowlarr", "ProwlarrError", "Source",
     "all_sources", "get_source", "source_for_url",
 ]

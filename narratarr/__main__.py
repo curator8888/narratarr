@@ -30,6 +30,8 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx logs every request URL at INFO, and some services (SABnzbd, Prowlarr links) put API keys in URLs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     shown = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
     print(f"\n  Narratarr {_version()} is running → http://{shown}:{args.port}\n")
     uvicorn.run("narratarr.api:app", host=args.host, port=args.port, log_level="warning")

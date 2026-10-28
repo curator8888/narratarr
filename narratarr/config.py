@@ -31,6 +31,15 @@ class Settings:
     audiobookshelf_url: str = ""
     audiobookshelf_token: str = ""
     audiobookshelf_library_id: str = ""
+    prowlarr_url: str = ""
+    prowlarr_api_key: str = ""
+    prowlarr_categories: str = "3030"  # Newznab/Torznab "Audio/Audiobook"
+    sabnzbd_url: str = ""
+    sabnzbd_api_key: str = ""
+    sabnzbd_category: str = ""
+    # When SABnzbd sees its downloads under a different path (e.g. another container).
+    sabnzbd_remote_path: str = ""
+    sabnzbd_local_path: str = ""
 
     def public(self) -> dict:
         """Settings safe to send to the browser (secrets masked)."""
@@ -39,10 +48,12 @@ class Settings:
             d[key] = _mask(d[key])
         d["rd_configured"] = bool(self.rd_api_key)
         d["brave_configured"] = bool(self.brave_api_key)
+        d["prowlarr_configured"] = bool(self.prowlarr_url and self.prowlarr_api_key)
+        d["sabnzbd_configured"] = bool(self.sabnzbd_url and self.sabnzbd_api_key)
         return d
 
 
-SECRETS = ("rd_api_key", "audiobookshelf_token", "brave_api_key")
+SECRETS = ("rd_api_key", "audiobookshelf_token", "brave_api_key", "prowlarr_api_key", "sabnzbd_api_key")
 
 
 def _mask(secret: str) -> str:
@@ -83,7 +94,7 @@ def update(changes: dict) -> Settings:
                 v = max(1, min(int(v), 8))
             elif k == "search_provider":
                 v = v if v in ("audiobookbay", "brave") else "audiobookbay"
-            elif k == "abb_base_url":
+            elif k in ("abb_base_url", "prowlarr_url", "sabnzbd_url"):
                 v = str(v).strip().rstrip("/")
             elif isinstance(v, str):
                 v = v.strip()

@@ -204,6 +204,51 @@ async def smart_search(source: Source, query: str, batch: int = 1, use_suggestio
     return {"items": rank(items, queries), "page": batch, "total_pages": total_batches, "did_you_mean": did_you_mean}
 
 
+async def careful_search(source: Source, query: str, use_suggestions: bool = True) -> dict:
+    """For sources where every query costs something (Prowlarr spends each indexer's API allowance):
+    search as typed, and only try a corrected spelling when that finds little."""
+    items = list((await source.search(query, 1)).items)
+    did_you_mean, queries = "", [query]
+    best = max((score(query, i) for i in items), default=0)
+    if use_suggestions and (len(items) < 3 or best < 75):
+        extra, label = corrected_queries(query, await suggestions(query))
+        if extra:
+            try:
+                more = (await source.search(extra[0], 1)).items
+            except Exception:
+                more = []  # the search as typed already worked; don't fail over the extra one
+            if more:
+                items += more
+                queries.append(extra[0])
+                did_you_mean = label or extra[0]
+    return {"items": rank(items, queries), "page": 1, "total_pages": 1, "did_you_mean": did_you_mean}
+
+
+_RELEASE_NOISE = re.compile(r"\b(unabridged|abridged|audiobook|retail|m4b|mp3|flac|aac|\d{2,3}\s?kbps|(19|20)\d{2})\b", re.I)
+
+
+async def identify(release: str) -> dict | None:
+    """Work out which book a release name is, from Apple's catalog: {title, author, cover_url} or None.
+
+    Strict on purpose: both the title and the author must appear in the release name,
+    because a wrong match would file the book under the wrong folder.
+    """
+    words = normalize(_RELEASE_NOISE.sub(" ", clean_title(release)))
+    if len(words) < 3:
+        return None
+    for sg in await suggestions(words, limit=5):
+        title = normalize(sg["title"].split(":")[0])
+        author = normalize(sg["author"])
+        if not (title and author):
+            continue
+        if fuzz.partial_ratio(title, words) >= 90 and fuzz.token_set_ratio(author, words) >= 85:
+            # Keep a subtitle only if the release has it too; it may name a different edition.
+            main, _, sub = sg["title"].partition(":")
+            keep = sub.strip() and fuzz.partial_ratio(normalize(sub), words) >= 90
+            return {**sg, "title": sg["title"] if keep else main.strip()}
+    return None
+
+
 def rank(items: list[Listing], queries: list[str]) -> list[dict]:
     """Dedupe and sort by best fuzzy match; ties keep the incoming order."""
     seen, ranked = set(), []

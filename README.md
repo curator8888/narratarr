@@ -73,6 +73,7 @@ No other app needed. You get chapters (including the chapter markers inside `.m4
 - **Continue listening** shelf and finished-book tracking
 - Looks at home on a **phone**: add it to your home screen and listen anywhere on your Wi-Fi
 - **Light and dark** themes that follow your system
+- Plugs into your **\*arr stack**: search your **Prowlarr** indexers and download Usenet releases with **SABnzbd**
 - Optional **Audiobookshelf** rescan after every download, so your other apps see new books right away
 - Optional **password** for when it's reachable from your network
 - **Pluggable sources**: adding a new catalog is one small Python class
@@ -206,9 +207,11 @@ uv sync && uv run narratarr
 flowchart LR
     A["🔎 Discover & search"] --> B{"Which source?"}
     B -- "LibriVox · Old-Time Radio" --> C["⬇️ Direct HTTPS download<br/>from the Internet Archive"]
-    B -- "Torrent-based sources" --> D["🧲 Info hash → Real-Debrid<br/>cached, then unrestricted"]
+    B -- "Torrents · AudiobookBay, Prowlarr" --> D["🧲 Info hash → Real-Debrid<br/>cached, then unrestricted"]
+    B -- "Usenet · Prowlarr" --> U["📰 NZB → SABnzbd<br/>downloaded and unpacked"]
     C --> E["🗂️ Organize<br/>Author / Title · cover · description"]
     D --> E
+    U --> E
     E --> F[("📚 Your library")]
     F --> G["▶️ Built-in player"]
     F --> H["Audiobookshelf · Plex · any app"]
@@ -217,7 +220,7 @@ flowchart LR
 | Step | What happens |
 | --- | --- |
 | **Queue** | Books you add wait in a queue (2 at a time by default). Interrupted downloads pick up again when the app restarts. |
-| **Fetch** | Free sources download straight over HTTPS. Torrent-based sources go through [Real-Debrid](https://real-debrid.com), so nothing is ever seeded from your machine. |
+| **Fetch** | Free sources download straight over HTTPS. Torrents go through [Real-Debrid](https://real-debrid.com), so nothing is ever seeded from your machine. Usenet releases are handed to your [SABnzbd](https://sabnzbd.org), and Narratarr picks up the files when it has finished unpacking. |
 | **Organize** | Archives are unzipped safely, files move into `{author}/{title}` (configurable), and `cover.jpg`, `desc.txt` and `reader.txt` are written next to them, the layout Audiobookshelf expects. |
 | **Listen** | The player treats a book as one timeline, whether it's a single `.m4b` or 40 `.mp3` parts, and streams it to any browser with seeking. |
 
@@ -228,14 +231,42 @@ flowchart LR
 | **LibriVox** | ~22,000 public-domain audiobooks read by volunteers: Austen, Doyle, Dickens, Poe, Twain… | Free, direct from the Internet Archive |
 | **Old-Time Radio** | ~9,000 classic radio dramas and comedies, 1930s–60s | Free, direct from the Internet Archive. Some full series are several GB, and the size is shown before you download |
 | **AudiobookBay** *(optional)* | Torrent listings | Via Real-Debrid (paid account required) |
+| **Prowlarr** *(optional)* | Whatever indexers you've added to your own [Prowlarr](https://prowlarr.com) | Usenet via SABnzbd, torrents via Real-Debrid |
 
 Narratarr deliberately sticks to the Internet Archive's **curated** LibriVox and Old-Time Radio collections. The Archive's general uploads include copyrighted audiobooks posted without permission, so those are left out.
+
+### Prowlarr and SABnzbd
+
+Already running an \*arr stack? Narratarr can search the indexers in your Prowlarr and hand Usenet downloads to SABnzbd, the same way Sonarr and Radarr do.
+
+1. **Settings → Prowlarr:** enter its address (e.g. `http://localhost:9696`) and the API key from *Prowlarr → Settings → General*, then press **Test**. A **Prowlarr** tab appears on Discover.
+2. **Settings → SABnzbd:** enter its address (e.g. `http://localhost:8080`) and the API key from *SABnzbd → Config → General*, then press **Test**. Optionally pick a category, such as `audiobooks`.
+3. Search on the Prowlarr tab. Each result shows its indexer, size, format, and whether it's Usenet or a torrent. Open one and Narratarr matches the release name to the real book, so it's filed under the right author and title, with cover art.
+
+Usenet results go to SABnzbd. When SABnzbd has downloaded, repaired and unpacked a release, Narratarr moves the files into your library and clears the job from SABnzbd's history. Torrent results go through Real-Debrid. Stopping or removing a book in Narratarr also removes it from SABnzbd's queue.
+
+Narratarr searches category `3030` (*Audio › Audiobook*) by default; you can add more under **Settings → Prowlarr**. To go easy on indexer API limits, each search is sent once as typed, and a second, spelling-corrected search is only made when the first finds little.
+
+> [!TIP]
+> **Running both in Docker?** Narratarr needs to see SABnzbd's finished downloads. Mount the same host folder into both containers, ideally at the same path:
+>
+> ```yaml
+> services:
+>   narratarr:
+>     volumes:
+>       - /data/usenet:/data/usenet   # same path as in SABnzbd
+>   sabnzbd:
+>     volumes:
+>       - /data/usenet:/data/usenet
+> ```
+>
+> If the paths have to differ (say SABnzbd uses `/downloads` and Narratarr uses `/data/usenet`), fill in **Path mapping** under Settings → SABnzbd. Use your containers' names as the addresses, e.g. `http://prowlarr:9696` and `http://sabnzbd:8080`.
 
 <br>
 
 ## ⚙️ Configuration
 
-Most things live on the **Settings** page: library folder, folder template, how many downloads run at once, search options, Real-Debrid and Audiobookshelf. Secrets are stored in a `chmod 600` file and never sent back to the browser in full.
+Most things live on the **Settings** page: library folder, folder template, how many downloads run at once, search options, Real-Debrid, Prowlarr, SABnzbd and Audiobookshelf. Secrets are stored in a `chmod 600` file and never sent back to the browser in full.
 
 A few things are set with environment variables instead:
 
@@ -273,7 +304,7 @@ Smart search sends what you type to Apple's public search API. You can turn it o
 <details>
 <summary><b>Do I need Real-Debrid?</b></summary>
 
-No. LibriVox and Old-Time Radio download directly and for free. Real-Debrid is only used by torrent-based sources, and Narratarr works fine without it.
+No. LibriVox and Old-Time Radio download directly and for free, and Usenet results from Prowlarr go through SABnzbd. Real-Debrid is only used for torrents, and Narratarr works fine without it.
 </details>
 
 <details>
@@ -289,9 +320,9 @@ Books go to your library folder (`~/Audiobooks` by default). Settings and the li
 </details>
 
 <details>
-<summary><b>Is there a Prowlarr integration?</b></summary>
+<summary><b>Does it work with Prowlarr and SABnzbd?</b></summary>
 
-Not yet. The source system is pluggable (see below), and an indexer source is a welcome contribution.
+Yes. See [Prowlarr and SABnzbd](#prowlarr-and-sabnzbd). Torrent results from Prowlarr download through Real-Debrid; a qBittorrent / Transmission option is a welcome contribution.
 </details>
 
 <details>
@@ -318,16 +349,18 @@ narratarr/
   sources/          book catalogs (one class each, see base.py)
     archive.py        LibriVox + Old-Time Radio (Internet Archive)
     audiobookbay.py   optional torrent source
+    prowlarr.py       searches your Prowlarr indexers (Usenet + torrents)
   search.py         typo correction + ranking
   media.py          audio files + chapters (Nero and QuickTime) for the player
   realdebrid.py     Real-Debrid client
+  sabnzbd.py        SABnzbd client
   db.py, config.py  SQLite library + settings
   static/           the web UI: vanilla JS modules and CSS, no build step
 install.sh          the guided installer
 Dockerfile          two-stage image built with uv
 ```
 
-**Adding a source:** implement the small `Source` protocol in [`narratarr/sources/base.py`](narratarr/sources/base.py) (`latest`, `search`, `details`, `categories`, `owns`), set `delivery` to `"direct"` (plain HTTPS files) or `"torrent"` (info hash via Real-Debrid), and register it in `sources/__init__.py`. The UI, library, queue and player pick it up automatically.
+**Adding a source:** implement the small `Source` protocol in [`narratarr/sources/base.py`](narratarr/sources/base.py) (`latest`, `search`, `details`, `categories`, `owns`), set `delivery` to `"direct"` (plain HTTPS files), `"torrent"` (info hash via Real-Debrid) or `"indexer"` (each release says whether it's Usenet or a torrent), and register it in `sources/__init__.py`. The UI, library, queue and player pick it up automatically.
 
 Issues and pull requests are welcome, especially new **legal** sources, translations and accessibility fixes.
 

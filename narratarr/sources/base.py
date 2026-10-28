@@ -23,6 +23,11 @@ class Listing:
     bitrate: str = ""
     size: str = ""
     posted: str = ""
+    # Prowlarr results only: which indexer, "torrent" or "usenet", and the raw release name.
+    indexer: str = ""
+    protocol: str = ""
+    seeders: int | None = None
+    release: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -46,6 +51,7 @@ class Details(Listing):
     info_hash: str = ""
     trackers: list[str] = field(default_factory=list)
     files: list[dict] = field(default_factory=list)  # direct downloads: {url, name, size}
+    download_url: str = ""  # Prowlarr: where to fetch the .nzb / .torrent (without the API key)
 
     def magnet(self) -> str:
         if not self.info_hash:
@@ -66,7 +72,7 @@ class Source(Protocol):
     label: str
     description: str
     default_label: str  # what the unfiltered Discover view is called
-    delivery: str  # "torrent" (info hash via Real-Debrid) or "direct" (plain HTTPS files)
+    delivery: str  # "torrent" (via Real-Debrid), "direct" (plain HTTPS files) or "indexer" (Prowlarr: per release)
 
     def owns(self, url: str) -> bool: ...
     def categories(self) -> list[Category]: ...

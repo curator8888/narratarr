@@ -99,16 +99,24 @@ function lastSource() {
 const sourceInfo = (name) => state.sources.find((s) => s.name === name) || { name, label: name, delivery: "torrent", categories: [] };
 const isDirect = (name) => sourceInfo(name).delivery === "direct";
 
+// Which download client a book needs that isn't set up yet ("" when it can download now).
+function missingClient(source, protocol) {
+  if (isDirect(source)) return "";
+  if (protocol === "usenet") return state.settings?.sabnzbd_configured ? "" : "SABnzbd";
+  return state.settings?.rd_configured ? "" : "Real-Debrid";
+}
+
 // ---------------------------------------------------------------------------
 // library actions (shared by every view)
 
-async function addBook(url, { cover = "", title = "", source = "audiobookbay" } = {}) {
-  // Free sources download directly; AudiobookBay needs Real-Debrid.
-  const download = isDirect(source) || !!state.settings?.rd_configured;
+async function addBook(url, { cover = "", title = "", source = "audiobookbay", protocol = "" } = {}) {
+  // Free sources download directly; torrents need Real-Debrid and Usenet releases need SABnzbd.
+  const missing = missingClient(source, protocol);
+  const download = !missing;
   const book = await api("/api/library", { method: "POST", body: { url, download, source } });
   await refreshLibrary();
   toast(
-    download ? `${book.title || title} is on its way` : `Saved ${book.title || title} to Wanted. Add your Real-Debrid key to download.`,
+    download ? `${book.title || title} is on its way` : `Saved ${book.title || title} to Wanted. Connect ${missing} in Settings to download.`,
     { kind: "ok", cover: cover || book.cover_url }
   );
   return book;
@@ -132,8 +140,9 @@ async function bookAction(id, action) {
     toast("Removed from library");
   } else {
     const book = state.library.find((b) => b.id === id);
-    if (action === "download" && !isDirect(book?.source) && !state.settings?.rd_configured) {
-      toast("Add your Real-Debrid API key in Settings first.", { kind: "err" });
+    const missing = action === "download" && book && missingClient(book.source, book.protocol);
+    if (missing) {
+      toast(`Connect ${missing} in Settings first.`, { kind: "err" });
       return false;
     }
     await api(`/api/library/${id}/${action}`, { method: "POST" });
@@ -165,9 +174,10 @@ async function refreshLibrary() {
 
 function updateRdPill() {
   const pill = $("#rd-pill");
-  const ok = state.settings?.rd_configured;
-  pill.className = `rd-pill ${ok ? "ok" : "missing"}`;
-  $("span", pill).textContent = ok ? "Real-Debrid connected" : "Connect Real-Debrid";
+  const rd = state.settings?.rd_configured;
+  const sab = state.settings?.sabnzbd_configured;
+  pill.className = `rd-pill ${rd || sab ? "ok" : "missing"}`;
+  $("span", pill).textContent = rd ? "Real-Debrid connected" : sab ? "SABnzbd connected" : "Connect Real-Debrid";
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +203,10 @@ function route() {
 
 function cardHTML(item, lib, i = 0) {
   const h = hue(item.title + item.author);
-  const facts = [item.format, item.size, item.language !== "English" ? item.language : ""].filter(Boolean);
+  const facts = [
+    item.format, item.size, item.language !== "English" ? item.language : "",
+    item.protocol === "usenet" ? "Usenet" : item.seeders != null ? `${item.seeders} seeder${item.seeders === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
   const active = lib && ACTIVE.includes(lib.status);
   return `
     <article class="card" tabindex="0" data-url="${esc(item.url)}" ${lib ? `data-id="${lib.id}"` : ""} style="--glow:hsl(${h} 80% 55%);animation-delay:${Math.min(i, 12) * 35}ms">
@@ -205,7 +218,7 @@ function cardHTML(item, lib, i = 0) {
       </div>
       <div class="meta">
         <div class="title">${esc(item.title)}</div>
-        <div class="author">${esc(item.author || "Unknown author")}</div>
+        <div class="author">${esc(item.author || (item.indexer ? `via ${item.indexer}` : "Unknown author"))}</div>
         ${facts.length ? `<div class="facts">${facts.map((f) => `<span>${esc(f)}</span>`).join("")}</div>` : ""}
       </div>
     </article>`;
@@ -223,6 +236,9 @@ function Discover(root) {
   const d = state.discover;
   if (!state.sources.some((s) => s.name === d.source)) d.source = "librivox";
   const src = sourceInfo(d.source);
+  const st = state.settings;
+  const needsClient = st && (src.delivery === "torrent" ? !st.rd_configured
+    : src.delivery === "indexer" ? !st.rd_configured && !st.sabnzbd_configured : false);
   const greeting = (() => {
     const h = new Date().getHours();
     return h < 5 ? "Late night listening" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
@@ -237,7 +253,7 @@ function Discover(root) {
       <div class="sources" id="sources" role="tablist" aria-label="Where to look">
         ${state.sources.map((s) => `
           <button role="tab" aria-selected="${s.name === d.source}" class="source ${s.name === d.source ? "on" : ""}" data-src="${esc(s.name)}">
-            <b>${esc(s.label)}</b><small>${esc(s.delivery === "direct" ? "Free · direct download" : "Via Real-Debrid")}</small>
+            <b>${esc(s.label)}</b><small>${esc({ direct: "Free · direct download", indexer: "Your indexers" }[s.delivery] || "Via Real-Debrid")}</small>
           </button>`).join("")}
       </div>
       <div class="search-wrap">
@@ -254,10 +270,12 @@ function Discover(root) {
         ${src.categories.map((c) => `<button class="chip ${!d.q && d.category === c.slug ? "on" : ""}" data-cat="${esc(c.slug)}">${esc(c.name)}</button>`).join("")}
       </div>
     </header>
-    ${state.settings && !state.settings.rd_configured && src.delivery !== "direct" ? `
+    ${needsClient ? `
       <div class="banner">
         <div class="ico">${I.key}</div>
-        <div><strong>Connect Real-Debrid to start downloading</strong><p>You can browse and save books to Wanted. Downloads start once your API key is in.</p></div>
+        <div><strong>${src.delivery === "indexer" ? "Connect SABnzbd or Real-Debrid to start downloading" : "Connect Real-Debrid to start downloading"}</strong><p>${src.delivery === "indexer"
+          ? "SABnzbd handles Usenet results and Real-Debrid handles torrents. You can save books to Wanted until then."
+          : "You can browse and save books to Wanted. Downloads start once your API key is in."}</p></div>
         <a class="btn" href="#/settings">Open Settings</a>
       </div>` : ""}
     <div class="section-head"><h2 id="disc-title"></h2><div class="refine" id="refine"></div></div>
@@ -342,7 +360,7 @@ function Discover(root) {
     footer();
     const slow = setTimeout(() => {
       if (d.loading && token === d.token) {
-        sentinel.innerHTML = '<div style="display:grid;justify-items:center;gap:12px;color:var(--text-3)"><span class="spinner"></span><span>AudiobookBay is slow to respond. Still trying…</span></div>';
+        sentinel.innerHTML = '<div style="display:grid;justify-items:center;gap:12px;color:var(--text-3)"><span class="spinner"></span><span>${esc(src.label)} is slow to respond. Still trying…</span></div>';
       }
     }, 6000);
     try {
@@ -475,7 +493,7 @@ function Discover(root) {
     if (e.target.closest("[data-quick]")) {
       const btn = e.target.closest("[data-quick]");
       spinBtn(btn, true);
-      try { await addBook(item.url, { cover: item.cover_url, title: item.title, source: d.source }); }
+      try { await addBook(item.url, { cover: item.cover_url, title: item.title, source: d.source, protocol: item.protocol }); }
       catch (err) { toast(err.message, { kind: "err" }); spinBtn(btn, false); }
       return;
     }
@@ -655,8 +673,9 @@ function jobDetail(b) {
   return parts.map((p) => `<span>${p}</span>`).join("");
 }
 
-function stepsHTML(status, source) {
-  const phases = isDirect(source) ? PHASES.filter(([s]) => s !== "caching") : PHASES;
+function stepsHTML(status, source, protocol) {
+  const phases = protocol === "usenet" ? [["resolving", "Resolve"], ["downloading", "SABnzbd"], ["organizing", "Organize"]]
+    : isDirect(source) ? PHASES.filter(([s]) => s !== "caching") : PHASES;
   const idx = phases.findIndex(([s]) => s === status);
   return `<div class="steps">${phases.map(([, label], i) =>
     `<span class="step ${idx > i ? "done" : idx === i ? "now" : ""}"><i></i>${label}</span>`).join("")}</div>`;
@@ -686,7 +705,7 @@ function Activity(root) {
         <div style="min-width:0">
           <h3>${esc(b.title)}</h3>
           <div class="by">${esc(b.author)}</div>
-          ${stepsHTML(b.status, b.source)}
+          ${stepsHTML(b.status, b.source, b.protocol)}
           <div class="progress ${["caching", "downloading"].includes(b.status) ? "" : "indeterminate"}"><i style="width:${b.progress || 0}%"></i></div>
           <div class="detail">${jobDetail(b)}</div>
         </div>
@@ -815,6 +834,54 @@ function Settings(root) {
       </section>
 
       <section class="panel">
+        <div><h3>Prowlarr</h3><p class="desc">Optional. Search the indexers you’ve added to Prowlarr. Usenet results download through SABnzbd, torrents through Real-Debrid.</p></div>
+        <div class="body">
+          <div class="field"><label for="prowlarr_url">Prowlarr address</label><input class="input mono" id="prowlarr_url" name="prowlarr_url" placeholder="http://localhost:9696" value="${esc(s.prowlarr_url)}" /></div>
+          <div class="field">
+            <label for="prowlarr_api_key">API key</label>
+            <div class="input-row">
+              <input class="input mono" id="prowlarr_api_key" name="prowlarr_api_key" type="password" placeholder="Prowlarr → Settings → General → API Key" value="${esc(s.prowlarr_api_key)}" />
+              <button class="btn" type="button" id="test-prowlarr">Test</button>
+            </div>
+            <div id="prowlarr-result"></div>
+          </div>
+          <div class="field">
+            <label for="prowlarr_categories">Categories</label>
+            <input class="input mono" id="prowlarr_categories" name="prowlarr_categories" value="${esc(s.prowlarr_categories)}" style="max-width:220px" />
+            <span class="hint"><code>3030</code> is Audio › Audiobook. Separate several with commas.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div><h3>SABnzbd</h3><p class="desc">Optional. Downloads the Usenet results you pick from Prowlarr, then Narratarr files them into your library.</p></div>
+        <div class="body">
+          <div class="field"><label for="sabnzbd_url">SABnzbd address</label><input class="input mono" id="sabnzbd_url" name="sabnzbd_url" placeholder="http://localhost:8080" value="${esc(s.sabnzbd_url)}" /></div>
+          <div class="field">
+            <label for="sabnzbd_api_key">API key</label>
+            <div class="input-row">
+              <input class="input mono" id="sabnzbd_api_key" name="sabnzbd_api_key" type="password" placeholder="SABnzbd → Config → General → API Key" value="${esc(s.sabnzbd_api_key)}" />
+              <button class="btn" type="button" id="test-sabnzbd">Test</button>
+            </div>
+            <div id="sabnzbd-result"></div>
+          </div>
+          <div class="field">
+            <label for="sabnzbd_category">Category</label>
+            <input class="input mono" id="sabnzbd_category" name="sabnzbd_category" placeholder="audiobooks" value="${esc(s.sabnzbd_category)}" style="max-width:220px" />
+            <span class="hint">Optional. Must already exist in SABnzbd. Leave empty to use its default.</span>
+          </div>
+          <div class="field">
+            <label for="sabnzbd_remote_path">Path mapping</label>
+            <div class="input-row">
+              <input class="input mono" id="sabnzbd_remote_path" name="sabnzbd_remote_path" placeholder="SABnzbd’s folder, e.g. /downloads" value="${esc(s.sabnzbd_remote_path)}" />
+              <input class="input mono" id="sabnzbd_local_path" name="sabnzbd_local_path" placeholder="Same folder here, e.g. /data/usenet" value="${esc(s.sabnzbd_local_path)}" />
+            </div>
+            <span class="hint">Only needed when SABnzbd and Narratarr see the downloads folder at different paths, such as separate Docker containers.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
         <div><h3>Audiobookshelf</h3><p class="desc">Optional. Tells your Audiobookshelf server to rescan after each download.</p></div>
         <div class="body">
           <div class="field"><label for="audiobookshelf_url">Server URL</label><input class="input mono" id="audiobookshelf_url" name="audiobookshelf_url" placeholder="http://localhost:13378" value="${esc(s.audiobookshelf_url)}" /></div>
@@ -866,6 +933,9 @@ function Settings(root) {
     form.rd_api_key.value = state.settings.rd_api_key;
     form.audiobookshelf_token.value = state.settings.audiobookshelf_token;
     form.brave_api_key.value = state.settings.brave_api_key;
+    form.prowlarr_api_key.value = state.settings.prowlarr_api_key;
+    form.sabnzbd_api_key.value = state.settings.sabnzbd_api_key;
+    state.sources = await api("/api/sources"); // the Prowlarr tab appears once it's set up
     updateRdPill();
     if (!quiet) toast("Settings saved", { kind: "ok" });
   }
@@ -892,6 +962,24 @@ function Settings(root) {
     }
     spinBtn(btn, false);
   };
+
+  const okLine = (html) => `<div class="rd-result">${I.check.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"')}<span>${html}</span></div>`;
+  const tester = (name, describe) => {
+    $(`#test-${name}`, root).onclick = async (e) => {
+      const btn = e.currentTarget;
+      const out = $(`#${name}-result`, root);
+      spinBtn(btn, true);
+      try {
+        await save(true);
+        out.innerHTML = okLine(describe(await api(`/api/settings/test-${name}`, { method: "POST" })));
+      } catch (err) {
+        out.innerHTML = `<div class="rd-result bad">${esc(err.message)}</div>`;
+      }
+      spinBtn(btn, false);
+    };
+  };
+  tester("prowlarr", (r) => `Connected to Prowlarr ${esc(r.version)} · <b>${r.indexers}</b> indexer${r.indexers === 1 ? "" : "s"} enabled`);
+  tester("sabnzbd", (r) => `Connected to SABnzbd ${esc(r.version)}`);
 
   $("#test-rd", root).onclick = async (e) => {
     const btn = e.currentTarget;
@@ -979,7 +1067,7 @@ function liveHTML(lib) {
 
 function updateDrawerLive() {
   const live = $("#drawer-live");
-  if (!live || !state.drawer) return;
+  if (!live || !state.drawer || state.drawer.loading) return; // keep the spinner until details arrive
   const html = liveHTML(drawerBook());
   if (live.dataset.sig === html) return;
   live.dataset.sig = html;
@@ -995,6 +1083,8 @@ function drawerHTML(b, loading) {
     b.size && [I.disc, b.size],
     b.language && [I.globe, b.language],
     isDirect(b.source) && [I.check, "Free & legal"],
+    b.protocol === "usenet" && [I.down, "Usenet"],
+    b.protocol === "torrent" && [I.down, b.seeders != null ? `Torrent · ${b.seeders} seeder${b.seeders === 1 ? "" : "s"}` : "Torrent"],
   ].filter(Boolean);
   const desc = (b.description || "").trim();
   return `
@@ -1013,7 +1103,11 @@ function drawerHTML(b, loading) {
         ${b.posted ? `<dt>Posted</dt><dd>${esc(b.posted)}</dd>` : ""}
         ${b.info_hash ? `<dt>Info hash</dt><dd class="mono">${esc(b.info_hash)}</dd>` : ""}
         ${(b.files || []).length ? `<dt>Files</dt><dd>${b.files.length} ${esc(b.format || "audio")} file${b.files.length === 1 ? "" : "s"}${b.size ? ` · ${esc(b.size)}` : ""}</dd>` : ""}
-        <dt>Source</dt><dd><a href="${esc(b.url || b.source_url)}" target="_blank" rel="noopener noreferrer">${esc(sourceInfo(b.source).label)}${isDirect(b.source) ? " on Internet Archive" : ""} ↗</a></dd>
+        ${b.release ? `<dt>Release</dt><dd class="mono">${esc(b.release)}</dd>` : ""}
+        ${b.indexer ? `<dt>Indexer</dt><dd>${esc(b.indexer)}</dd>` : ""}
+        <dt>Source</dt><dd>${/^https?:/.test(b.url || b.source_url || "")
+          ? `<a href="${esc(b.url || b.source_url)}" target="_blank" rel="noopener noreferrer">${esc(sourceInfo(b.source).label)}${isDirect(b.source) ? " on Internet Archive" : ""} ↗</a>`
+          : esc(sourceInfo(b.source).label)}</dd>
       </dl>` : ""}
     </div>`;
 }
@@ -1027,7 +1121,7 @@ function paintDrawer(b, loading) {
 }
 
 async function openDrawer({ url, bookId, preview, source }) {
-  state.drawer = { url, bookId, source };
+  state.drawer = { url, bookId, source, protocol: preview?.protocol || "" };
   drawer.classList.add("open");
   scrim.classList.add("open");
   document.body.style.overflow = "hidden";
@@ -1038,16 +1132,19 @@ async function openDrawer({ url, bookId, preview, source }) {
     // Library books already have everything we need.
     state.drawer.url = lib.source_url;
     state.drawer.source = lib.source;
+    state.drawer.protocol = lib.protocol;
     paintDrawer(lib, false);
     $("[data-close]", drawer)?.focus({ preventScroll: true });
     return;
   }
 
+  state.drawer.loading = true;
   paintDrawer({ title: "Loading…", author: "", ...preview, source }, true);
   $("[data-close]", drawer)?.focus({ preventScroll: true });
   try {
     const details = await api(`/api/details?${new URLSearchParams({ url, source: source || "" })}`);
     if (state.drawer?.url !== url) return;
+    state.drawer.loading = false;
     // Keep listing facts (like size) when the book page leaves them blank.
     const merged = { ...preview };
     for (const [k, v] of Object.entries(details)) if (v !== "" && !(Array.isArray(v) && !v.length)) merged[k] = v;
@@ -1055,6 +1152,7 @@ async function openDrawer({ url, bookId, preview, source }) {
     paintDrawer(merged, false);
   } catch (e) {
     if (state.drawer?.url !== url) return;
+    state.drawer.loading = false;
     $("#drawer-live").innerHTML = `<div class="state failed">${esc(e.message)}</div>`;
   }
 }
@@ -1079,7 +1177,7 @@ drawer.onclick = async (e) => {
         await refreshLibrary();
         toast("Saved to Wanted", { kind: "ok" });
       } else {
-        await addBook(url, { cover: $(".hero-cover img", drawer)?.src, source: state.drawer.source });
+        await addBook(url, { cover: $(".hero-cover img", drawer)?.src, source: state.drawer.source, protocol: state.drawer.protocol });
       }
     } else if (act === "play") {
       spinBtn(btn, false);

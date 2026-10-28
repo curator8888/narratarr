@@ -54,6 +54,11 @@ MIGRATIONS = {
     "listened_at": "REAL",
     "finished": "INTEGER NOT NULL DEFAULT 0",
     "files": "TEXT NOT NULL DEFAULT '[]'",
+    "protocol": "TEXT NOT NULL DEFAULT ''",
+    "download_url": "TEXT NOT NULL DEFAULT ''",
+    "sab_nzo_id": "TEXT NOT NULL DEFAULT ''",
+    "indexer": "TEXT NOT NULL DEFAULT ''",
+    "release": "TEXT NOT NULL DEFAULT ''",
 }
 
 JSON_COLUMNS = ("narrators", "categories", "trackers", "files")
