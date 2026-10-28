@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="766" height="887" viewBox="0 0 766 887">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1d1619"/><stop offset="1" stop-color="#141013"/></linearGradient></defs>
+<rect width="766" height="887" rx="14" fill="url(#bg)"/>
+<rect x="0.5" y="0.5" width="765" height="886" rx="13.5" fill="none" stroke="#3a3034"/>
+<circle cx="24" cy="22" r="6" fill="#ff5f57"/><circle cx="44" cy="22" r="6" fill="#febc2e"/><circle cx="64" cy="22" r="6" fill="#28c840"/>
+<text x="383" y="27" fill="#8c8287" font-family="-apple-system,Segoe UI,sans-serif" font-size="13" text-anchor="middle">install.sh</text>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="14.2" xml:space="preserve" style="white-space:pre">
+<text x="47.8" y="82" fill="#f8c66e" textLength="17.2" lengthAdjust="spacingAndGlyphs">▁▃</text>
+<text x="65.0" y="82" fill="#f29662" textLength="17.2" lengthAdjust="spacingAndGlyphs">▅▇</text>
+<text x="82.2" y="82" fill="#ec6f55" textLength="17.2" lengthAdjust="spacingAndGlyphs">█▇</text>
+<text x="99.4" y="82" fill="#f29662" textLength="25.8" lengthAdjust="spacingAndGlyphs">▅▃▁</text>
+<text x="151.0" y="82" fill="#ec6f55" font-weight="700" textLength="146.2" lengthAdjust="spacingAndGlyphs">N&#160;A&#160;R&#160;R&#160;A&#160;T&#160;A&#160;R&#160;R</text>
+<text x="151.0" y="103" fill="#968c96" textLength="378.4" lengthAdjust="spacingAndGlyphs">your&#160;audiobooks:&#160;found,&#160;fetched,&#160;and&#160;playing</text>
+<text x="39.2" y="145" fill="#d9d1d3" textLength="309.6" lengthAdjust="spacingAndGlyphs">How&#160;would&#160;you&#160;like&#160;to&#160;run&#160;Narratarr?</text>
+<text x="56.4" y="187" fill="#7ed391" textLength="8.6" lengthAdjust="spacingAndGlyphs">✔</text>
+<text x="73.6" y="187" fill="#e8e1df" font-weight="700" textLength="51.6" lengthAdjust="spacingAndGlyphs">Native</text>
+<text x="39.2" y="229" fill="#ec6f55" font-weight="700" textLength="8.6" lengthAdjust="spacingAndGlyphs">●</text>
+<text x="56.4" y="229" fill="#e8e1df" font-weight="700" textLength="146.2" lengthAdjust="spacingAndGlyphs">Getting&#160;the&#160;tools</text>
+<text x="219.8" y="229" fill="#968c96" textLength="94.6" lengthAdjust="spacingAndGlyphs">step&#160;1&#160;of&#160;4</text>
+<text x="39.2" y="271" fill="#7ed391" textLength="8.6" lengthAdjust="spacingAndGlyphs">✔</text>
+<text x="56.4" y="271" fill="#d9d1d3" textLength="206.4" lengthAdjust="spacingAndGlyphs">uv&#160;is&#160;installed&#160;(0.12.9)</text>
+<text x="39.2" y="313" fill="#ec6f55" font-weight="700" textLength="8.6" lengthAdjust="spacingAndGlyphs">●</text>
+<text x="56.4" y="313" fill="#e8e1df" font-weight="700" textLength="103.2" lengthAdjust="spacingAndGlyphs">Your&#160;library</text>
+<text x="176.8" y="313" fill="#968c96" textLength="94.6" lengthAdjust="spacingAndGlyphs">step&#160;2&#160;of&#160;4</text>
+<text x="39.2" y="355" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">?</text>
+<text x="56.4" y="355" fill="#d9d1d3" textLength="309.6" lengthAdjust="spacingAndGlyphs">Where&#160;should&#160;finished&#160;audiobooks&#160;go?</text>
+<text x="374.6" y="355" fill="#968c96" textLength="120.4" lengthAdjust="spacingAndGlyphs">(~/Audiobooks)</text>
+<text x="39.2" y="376" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">›</text>
+<text x="56.4" y="376" fill="#d9d1d3" textLength="103.2" lengthAdjust="spacingAndGlyphs">~/Audiobooks</text>
+<text x="39.2" y="397" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">?</text>
+<text x="56.4" y="397" fill="#d9d1d3" textLength="301.0" lengthAdjust="spacingAndGlyphs">Which&#160;port&#160;should&#160;the&#160;web&#160;page&#160;use?</text>
+<text x="366.0" y="397" fill="#968c96" textLength="51.6" lengthAdjust="spacingAndGlyphs">(8484)</text>
+<text x="39.2" y="418" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">›</text>
+<text x="56.4" y="418" fill="#d9d1d3" textLength="34.4" lengthAdjust="spacingAndGlyphs">8484</text>
+<text x="39.2" y="439" fill="#7ed391" textLength="8.6" lengthAdjust="spacingAndGlyphs">✔</text>
+<text x="56.4" y="439" fill="#d9d1d3" textLength="137.6" lengthAdjust="spacingAndGlyphs">Books&#160;will&#160;go&#160;to</text>
+<text x="202.6" y="439" fill="#e8e1df" font-weight="700" textLength="103.2" lengthAdjust="spacingAndGlyphs">~/Audiobooks</text>
+<text x="39.2" y="481" fill="#ec6f55" font-weight="700" textLength="8.6" lengthAdjust="spacingAndGlyphs">●</text>
+<text x="56.4" y="481" fill="#e8e1df" font-weight="700" textLength="172.0" lengthAdjust="spacingAndGlyphs">Installing&#160;Narratarr</text>
+<text x="245.6" y="481" fill="#968c96" textLength="94.6" lengthAdjust="spacingAndGlyphs">step&#160;3&#160;of&#160;4</text>
+<text x="39.2" y="523" fill="#7ed391" textLength="8.6" lengthAdjust="spacingAndGlyphs">✔</text>
+<text x="56.4" y="523" fill="#d9d1d3" textLength="309.6" lengthAdjust="spacingAndGlyphs">Downloading&#160;and&#160;installing&#160;Narratarr</text>
+<text x="39.2" y="544" fill="#7ed391" textLength="8.6" lengthAdjust="spacingAndGlyphs">✔</text>
+<text x="56.4" y="544" fill="#d9d1d3" textLength="215.0" lengthAdjust="spacingAndGlyphs">Installed&#160;narratarr&#160;0.1.0</text>
+<text x="39.2" y="586" fill="#ec6f55" font-weight="700" textLength="8.6" lengthAdjust="spacingAndGlyphs">●</text>
+<text x="56.4" y="586" fill="#e8e1df" font-weight="700" textLength="94.6" lengthAdjust="spacingAndGlyphs">Starting&#160;it</text>
+<text x="168.2" y="586" fill="#968c96" textLength="94.6" lengthAdjust="spacingAndGlyphs">step&#160;4&#160;of&#160;4</text>
+<text x="56.4" y="628" fill="#7ed391" textLength="8.6" lengthAdjust="spacingAndGlyphs">✔</text>
+<text x="73.6" y="628" fill="#e8e1df" font-weight="700" textLength="51.6" lengthAdjust="spacingAndGlyphs">Myself</text>
+<text x="39.2" y="649" fill="#f8c66e" textLength="8.6" lengthAdjust="spacingAndGlyphs">!</text>
+<text x="56.4" y="649" fill="#d9d1d3" textLength="223.6" lengthAdjust="spacingAndGlyphs">Open&#160;a&#160;new&#160;terminal&#160;so&#160;the</text>
+<text x="288.6" y="649" fill="#e8e1df" font-weight="700" textLength="77.4" lengthAdjust="spacingAndGlyphs">narratarr</text>
+<text x="374.6" y="649" fill="#d9d1d3" textLength="146.2" lengthAdjust="spacingAndGlyphs">command&#160;is&#160;found.</text>
+<text x="39.2" y="691" fill="#ec6f55" textLength="412.8" lengthAdjust="spacingAndGlyphs">╭──────────────────────────────────────────────╮</text>
+<text x="39.2" y="712" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="65.0" y="712" fill="#e8e1df" font-weight="700" textLength="197.8" lengthAdjust="spacingAndGlyphs">Narratarr&#160;is&#160;installed.</text>
+<text x="443.4" y="712" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="39.2" y="733" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="443.4" y="733" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="39.2" y="754" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="65.0" y="754" fill="#d9d1d3" textLength="77.4" lengthAdjust="spacingAndGlyphs">Start&#160;it:</text>
+<text x="176.8" y="754" fill="#ec6f55" textLength="180.6" lengthAdjust="spacingAndGlyphs">narratarr&#160;--port&#160;8484</text>
+<text x="443.4" y="754" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="39.2" y="775" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="65.0" y="775" fill="#d9d1d3" textLength="292.4" lengthAdjust="spacingAndGlyphs">Then&#160;open:&#160;&#160;&#160;http://127.0.0.1:8484</text>
+<text x="443.4" y="775" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="39.2" y="796" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="65.0" y="796" fill="#d9d1d3" textLength="215.0" lengthAdjust="spacingAndGlyphs">Library:&#160;&#160;&#160;&#160;&#160;~/Audiobooks</text>
+<text x="443.4" y="796" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="39.2" y="817" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="443.4" y="817" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="39.2" y="838" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="65.0" y="838" fill="#d9d1d3" textLength="361.2" lengthAdjust="spacingAndGlyphs">Update:&#160;&#160;&#160;&#160;&#160;&#160;run&#160;the&#160;install&#160;command&#160;again</text>
+<text x="443.4" y="838" fill="#ec6f55" textLength="8.6" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="39.2" y="859" fill="#ec6f55" textLength="412.8" lengthAdjust="spacingAndGlyphs">╰──────────────────────────────────────────────╯</text>
+</g></svg>

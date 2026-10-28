@@ -1,0 +1,13 @@
+{
+  "name": "Narratarr",
+  "short_name": "Narratarr",
+  "description": "Your audiobooks: found, fetched, and playing.",
+  "start_url": "/#/library",
+  "display": "standalone",
+  "background_color": "#0c0a0f",
+  "theme_color": "#0c0a0f",
+  "icons": [
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

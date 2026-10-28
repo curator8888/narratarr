@@ -1,0 +1,15 @@
+services:
+  narratarr:
+    image: ghcr.io/narratarr/narratarr:latest
+    container_name: narratarr
+    restart: unless-stopped
+    ports:
+      - "8484:8484"
+    environment:
+      - PUID=1000          # run `id -u` to find yours
+      - PGID=1000          # run `id -g` to find yours
+      - TZ=Etc/UTC
+      # - NARRATARR_PASSWORD=change-me   # recommended if others can reach this port
+    volumes:
+      - ./config:/config            # settings + library database
+      - ~/Audiobooks:/audiobooks    # where finished books go

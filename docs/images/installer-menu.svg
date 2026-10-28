@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="766" height="278" viewBox="0 0 766 278">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1d1619"/><stop offset="1" stop-color="#141013"/></linearGradient></defs>
+<rect width="766" height="278" rx="14" fill="url(#bg)"/>
+<rect x="0.5" y="0.5" width="765" height="277" rx="13.5" fill="none" stroke="#3a3034"/>
+<circle cx="24" cy="22" r="6" fill="#ff5f57"/><circle cx="44" cy="22" r="6" fill="#febc2e"/><circle cx="64" cy="22" r="6" fill="#28c840"/>
+<text x="383" y="27" fill="#8c8287" font-family="-apple-system,Segoe UI,sans-serif" font-size="13" text-anchor="middle">install.sh</text>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="14.2" xml:space="preserve" style="white-space:pre">
+<text x="47.8" y="82" fill="#f8c66e" textLength="17.2" lengthAdjust="spacingAndGlyphs">▁▃</text>
+<text x="65.0" y="82" fill="#f29662" textLength="17.2" lengthAdjust="spacingAndGlyphs">▅▇</text>
+<text x="82.2" y="82" fill="#ec6f55" textLength="17.2" lengthAdjust="spacingAndGlyphs">█▇</text>
+<text x="99.4" y="82" fill="#f29662" textLength="25.8" lengthAdjust="spacingAndGlyphs">▅▃▁</text>
+<text x="151.0" y="82" fill="#ec6f55" font-weight="700" textLength="146.2" lengthAdjust="spacingAndGlyphs">N&#160;A&#160;R&#160;R&#160;A&#160;T&#160;A&#160;R&#160;R</text>
+<text x="151.0" y="103" fill="#968c96" textLength="378.4" lengthAdjust="spacingAndGlyphs">your&#160;audiobooks:&#160;found,&#160;fetched,&#160;and&#160;playing</text>
+<text x="39.2" y="145" fill="#d9d1d3" textLength="309.6" lengthAdjust="spacingAndGlyphs">How&#160;would&#160;you&#160;like&#160;to&#160;run&#160;Narratarr?</text>
+<text x="39.2" y="187" fill="#ec6f55" textLength="25.8" lengthAdjust="spacingAndGlyphs">❯&#160;◉</text>
+<text x="73.6" y="187" fill="#ec6f55" font-weight="700" textLength="51.6" lengthAdjust="spacingAndGlyphs">Native</text>
+<text x="202.6" y="187" fill="#d9d1d3" textLength="447.2" lengthAdjust="spacingAndGlyphs">Installs&#160;like&#160;a&#160;normal&#160;app.&#160;Simplest&#160;on&#160;a&#160;Mac&#160;or&#160;PC.</text>
+<text x="56.4" y="208" fill="#968c96" textLength="8.6" lengthAdjust="spacingAndGlyphs">○</text>
+<text x="73.6" y="208" fill="#d9d1d3" textLength="51.6" lengthAdjust="spacingAndGlyphs">Docker</text>
+<text x="202.6" y="208" fill="#968c96" textLength="455.8" lengthAdjust="spacingAndGlyphs">Runs&#160;in&#160;a&#160;container.&#160;Great&#160;for&#160;servers&#160;and&#160;NAS&#160;boxes.</text>
+<text x="56.4" y="250" fill="#d9d1d3" textLength="249.4" lengthAdjust="spacingAndGlyphs">↑/↓&#160;to&#160;move&#160;·&#160;enter&#160;to&#160;choose</text>
+</g></svg>
