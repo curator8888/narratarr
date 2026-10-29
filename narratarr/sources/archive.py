@@ -159,6 +159,15 @@ class ArchiveSource:
             return Page(items=[], page=page, total_pages=1)
         return await self._search(f"{self.scope} AND ({terms})", page, None)
 
+    async def find(self, title: str, author: str = "") -> Page:
+        """Look for one specific book by its title and author fields (more precise than a free-text search)."""
+        words = lambda v: " AND ".join(_LUCENE_SPECIAL.sub(" ", v).split())  # noqa: E731
+        q = f"{self.scope} AND title:({words(title)})"
+        surname = _LUCENE_SPECIAL.sub(" ", author).split()[-1:] if author else []
+        if surname:
+            q += f" AND creator:({surname[0]})"
+        return await self._search(q, 1, "downloads desc")
+
     async def details(self, url: str) -> Details:
         if not self.owns(url):
             raise ValueError("URL does not belong to this source")

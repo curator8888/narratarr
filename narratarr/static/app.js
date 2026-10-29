@@ -21,6 +21,7 @@ const PHASES = [
   ["downloading", "Download"],
   ["organizing", "Organize"],
 ];
+const CLIENTS = { sabnzbd: "SABnzbd", nzbget: "NZBGet", realdebrid: "Real-Debrid", qbittorrent: "qBittorrent", transmission: "Transmission" };
 
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,7 @@ const state = {
   libSearch: "",
   drawer: null, // { url, bookId }
   view: null,
+  follows: [],
 };
 
 
@@ -96,21 +98,46 @@ function modal({ title, body, confirm = "Confirm", danger = false, extra = "" })
 function lastSource() {
   try { return localStorage.getItem("narratarr.source") || localStorage.getItem("audiobookeer.source") || "librivox"; } catch { return "librivox"; }
 }
-const sourceInfo = (name) => state.sources.find((s) => s.name === name) || { name, label: name, delivery: "torrent", categories: [] };
+const FALLBACK_SOURCES = {
+  local: { label: "Your files", delivery: "local" },
+  audible: { label: "Audible catalog", delivery: "wanted" },
+};
+const sourceInfo = (name) => state.sources.find((s) => s.name === name)
+  || { name, label: name, delivery: "torrent", categories: [], ...FALLBACK_SOURCES[name] };
 const isDirect = (name) => sourceInfo(name).delivery === "direct";
 
 // Which download client a book needs that isn't set up yet ("" when it can download now).
 function missingClient(source, protocol) {
-  if (isDirect(source)) return "";
-  if (protocol === "usenet") return state.settings?.sabnzbd_configured ? "" : "SABnzbd";
-  return state.settings?.rd_configured ? "" : "Real-Debrid";
+  if (isDirect(source) || source === "audible" || source === "local") return "";
+  const st = state.settings || {};
+  if (protocol === "usenet") return st.usenet_configured ? "" : CLIENTS[st.usenet_client] || "SABnzbd";
+  return st.torrent_configured ? "" : CLIENTS[st.torrent_client] || "Real-Debrid";
+}
+
+// Wanted Audible books, imports and client-handled jobs each show their own steps.
+function phasesFor(b) {
+  const st = state.settings || {};
+  if (b.source === "local") return [["downloading", "Copy"], ["organizing", "Organize"]];
+  if (isDirect(b.source)) return PHASES.filter(([s]) => s !== "caching");
+  const client = b.protocol === "usenet" ? b.download_client || st.usenet_client
+    : b.download_client || (st.torrent_client !== "realdebrid" ? st.torrent_client : "");
+  if (client && client !== "realdebrid") return [["resolving", "Resolve"], ["downloading", CLIENTS[client]], ["organizing", "Organize"]];
+  return PHASES;
 }
 
 // ---------------------------------------------------------------------------
 // library actions (shared by every view)
 
 async function addBook(url, { cover = "", title = "", source = "audiobookbay", protocol = "" } = {}) {
-  // Free sources download directly; torrents need Real-Debrid and Usenet releases need SABnzbd.
+  if (source === "audible") {
+    // Audible is only the catalog: the book goes to Wanted and Narratarr looks for a release.
+    const book = await api("/api/library", { method: "POST", body: { url, download: true, source } });
+    await refreshLibrary();
+    toast(book.status === "wanted" ? `${book.title} is on your Wanted list. Looking for it now…` : `${book.title} is already in your library`,
+      { kind: "ok", cover: cover || book.cover_url });
+    return book;
+  }
+  // Free sources download directly; torrents and Usenet releases need a download client.
   const missing = missingClient(source, protocol);
   const download = !missing;
   const book = await api("/api/library", { method: "POST", body: { url, download, source } });
@@ -174,19 +201,23 @@ async function refreshLibrary() {
 
 function updateRdPill() {
   const pill = $("#rd-pill");
-  const rd = state.settings?.rd_configured;
-  const sab = state.settings?.sabnzbd_configured;
-  pill.className = `rd-pill ${rd || sab ? "ok" : "missing"}`;
-  $("span", pill).textContent = rd ? "Real-Debrid connected" : sab ? "SABnzbd connected" : "Connect Real-Debrid";
+  const st = state.settings || {};
+  const ready = [st.torrent_configured && CLIENTS[st.torrent_client], st.usenet_configured && CLIENTS[st.usenet_client]].filter(Boolean);
+  pill.className = `rd-pill ${ready.length ? "ok" : "missing"}`;
+  $("span", pill).textContent = ready.length ? `${ready.join(" · ")} ready` : "Connect a downloader";
+}
+
+async function refreshFollows() {
+  try { state.follows = await api("/api/follows"); } catch { /* the page still works without them */ }
 }
 
 // ---------------------------------------------------------------------------
 // router
 
-const views = { discover: Discover, library: Library, activity: Activity, settings: Settings };
+const views = { discover: Discover, library: Library, authors: Authors, activity: Activity, settings: Settings };
 
 function route() {
-  const name = (location.hash.replace(/^#\/?/, "").split("?")[0] || "discover");
+  const [name = "discover", param] = location.hash.replace(/^#\/?/, "").split("?")[0].split("/");
   const View = views[name] || Discover;
   $$("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === name));
   state.view?.destroy?.();
@@ -194,7 +225,7 @@ function route() {
   root.classList.remove("enter");
   void root.offsetWidth;
   root.classList.add("enter");
-  state.view = View(root);
+  state.view = View(root, param);
   window.scrollTo({ top: 0 });
 }
 
@@ -204,8 +235,10 @@ function route() {
 function cardHTML(item, lib, i = 0) {
   const h = hue(item.title + item.author);
   const facts = [
-    item.format, item.size, item.language !== "English" ? item.language : "",
+    item.format, item.size, item.language && item.language !== "English" ? item.language : "",
     item.protocol === "usenet" ? "Usenet" : item.seeders != null ? `${item.seeders} seeder${item.seeders === 1 ? "" : "s"}` : "",
+    item.source === "audible" ? shortLength(item.length) : "",
+    item.source === "audible" ? releaseLabel(item.released || item.posted) : "",
   ].filter(Boolean);
   const active = lib && ACTIVE.includes(lib.status);
   return `
@@ -224,7 +257,17 @@ function cardHTML(item, lib, i = 0) {
     </article>`;
 }
 
+const shortLength = (len) => (len || "").replace(/ hours?/, "h").replace(/ and /, " ").replace(/ minutes?/, "m");
+
+function releaseLabel(day, always = false) {
+  const t = Date.parse(day || "");
+  if (!t) return "";
+  const when = new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return t > Date.now() ? `Out ${when}` : always ? when : "";
+}
+
 function quickButton(item, lib) {
+  if (!lib && item.source === "audible") return `<button class="quick" data-quick aria-label="Add ${esc(item.title)} to Wanted" title="Add to Wanted">${I.bookmark}</button>`;
   if (!lib) return `<button class="quick" data-quick aria-label="Download ${esc(item.title)}" title="Download">${I.plus}</button>`;
   if (lib.status === "completed") return `<button class="quick play-quick" data-play="${lib.id}" aria-label="Play ${esc(item.title)}" title="Play">${I.play}</button>`;
   return "";
@@ -237,8 +280,8 @@ function Discover(root) {
   if (!state.sources.some((s) => s.name === d.source)) d.source = "librivox";
   const src = sourceInfo(d.source);
   const st = state.settings;
-  const needsClient = st && (src.delivery === "torrent" ? !st.rd_configured
-    : src.delivery === "indexer" ? !st.rd_configured && !st.sabnzbd_configured : false);
+  const needsClient = st && (src.delivery === "torrent" ? !st.torrent_configured
+    : src.delivery === "indexer" ? !st.torrent_configured && !st.usenet_configured : false);
   const greeting = (() => {
     const h = new Date().getHours();
     return h < 5 ? "Late night listening" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
@@ -253,7 +296,7 @@ function Discover(root) {
       <div class="sources" id="sources" role="tablist" aria-label="Where to look">
         ${state.sources.map((s) => `
           <button role="tab" aria-selected="${s.name === d.source}" class="source ${s.name === d.source ? "on" : ""}" data-src="${esc(s.name)}">
-            <b>${esc(s.label)}</b><small>${esc({ direct: "Free · direct download", indexer: "Your indexers" }[s.delivery] || "Via Real-Debrid")}</small>
+            <b>${esc(s.label)}</b><small>${esc({ direct: "Free · direct download", indexer: "Your indexers", wanted: "Add to Wanted" }[s.delivery] || "Torrents")}</small>
           </button>`).join("")}
       </div>
       <div class="search-wrap">
@@ -273,9 +316,9 @@ function Discover(root) {
     ${needsClient ? `
       <div class="banner">
         <div class="ico">${I.key}</div>
-        <div><strong>${src.delivery === "indexer" ? "Connect SABnzbd or Real-Debrid to start downloading" : "Connect Real-Debrid to start downloading"}</strong><p>${src.delivery === "indexer"
-          ? "SABnzbd handles Usenet results and Real-Debrid handles torrents. You can save books to Wanted until then."
-          : "You can browse and save books to Wanted. Downloads start once your API key is in."}</p></div>
+        <div><strong>Connect a download client to start downloading</strong><p>${src.delivery === "indexer"
+          ? "Usenet results go to SABnzbd or NZBGet, torrents to Real-Debrid, qBittorrent or Transmission. You can save books to Wanted until then."
+          : "Use Real-Debrid, qBittorrent or Transmission. You can browse and save books to Wanted until then."}</p></div>
         <a class="btn" href="#/settings">Open Settings</a>
       </div>` : ""}
     <div class="section-head"><h2 id="disc-title"></h2><div class="refine" id="refine"></div></div>
@@ -302,7 +345,7 @@ function Discover(root) {
     const opts = (vals, cur, all) => `<option value="">${all}</option>` + [...new Set(vals.filter(Boolean))].sort()
       .map((v) => `<option ${v === cur ? "selected" : ""}>${esc(v)}</option>`).join("");
     // The unsorted order is whatever the source gave us: relevance, popularity or recency.
-    const listedNewest = !d.q && (src.delivery !== "direct" || d.category === "new");
+    const listedNewest = !d.q && (["torrent", "indexer"].includes(src.delivery) || d.category === "new");
     const natural = d.q ? "Best match" : listedNewest ? "Newest first" : "Most popular";
     const sorts = [["", natural], ["newest", "Newest first"], ["largest", "Largest"], ["smallest", "Smallest"], ["title", "Title A–Z"]]
       .filter(([v]) => !(v === "newest" && listedNewest));
@@ -588,9 +631,12 @@ function Library(root) {
   ];
 
   root.innerHTML = `
-    <header>
-      <div class="eyebrow">Your collection</div>
-      <h1 class="page-title">The <em>Library</em></h1>
+    <header class="page-head">
+      <div>
+        <div class="eyebrow">Your collection</div>
+        <h1 class="page-title">The <em>Library</em></h1>
+      </div>
+      <button class="btn" id="import-btn">${I.down} Import books</button>
     </header>
     <div id="shelf"></div>
     <div class="stats" id="stats"></div>
@@ -623,8 +669,9 @@ function Library(root) {
       grid.innerHTML = `<div class="empty" style="grid-column:1/-1">
         <div class="art">${I.books}</div>
         <h3>Your shelves are empty</h3>
-        <p>Find something on Discover and it’ll land here, organized and ready to listen to.</p>
-        <a class="btn primary" href="#/discover">${I.search} Start discovering</a></div>`;
+        <p>Find something on Discover and it’ll land here, organized and ready to listen to. Already have audiobooks? Bring them in.</p>
+        <div class="cta-row"><a class="btn primary" href="#/discover">${I.search} Start discovering</a>
+        <button class="btn" data-import>${I.down} Import books you have</button></div></div>`;
     } else if (!books.length) {
       grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="art">${I.search}</div><h3>No matches</h3><p>Nothing in this view matches your filter.</p></div>`;
     } else {
@@ -640,6 +687,7 @@ function Library(root) {
   };
   $("#lib-search", root).oninput = (e) => { state.libSearch = e.target.value; render(); };
   root.onclick = (e) => {
+    if (e.target.closest("#import-btn, [data-import]")) return openImport();
     const play = e.target.closest("[data-play]");
     if (play) return playBook(Number(play.dataset.play));
     const card = e.target.closest(".card[data-id]");
@@ -662,6 +710,331 @@ function Library(root) {
 }
 
 // ---------------------------------------------------------------------------
+// Import books you already have
+
+function openImport(folder = "") {
+  const scrim = $("#modal");
+  const st = state.settings || {};
+  const library = st.library_dir || "";
+  const imp = { books: [], folder: "", mode: "copy" };
+  scrim.hidden = false;
+  scrim.innerHTML = `
+    <div class="modal wide import" role="dialog" aria-modal="true" aria-labelledby="imp-title">
+      <h3 id="imp-title">Import books you already have</h3>
+      <p>Point Narratarr at a folder on this computer. Each folder of audio files becomes one book, named from the files’ tags or the folder names.</p>
+      <form class="input-row" id="imp-form">
+        <input class="input mono" id="imp-folder" placeholder="/path/to/your/audiobooks" value="${esc(folder)}" autocomplete="off" />
+        <button class="btn primary" id="imp-scan" type="submit">${I.search} Scan</button>
+      </form>
+      <div class="chips imp-quick">
+        ${library ? `<button class="chip" type="button" data-folder="${esc(library)}">Your library folder</button>` : ""}
+        ${st.import_folder ? `<button class="chip" type="button" data-folder="${esc(st.import_folder)}">Import folder</button>` : ""}
+      </div>
+      <div id="imp-results"></div>
+      <div class="actions">
+        <button class="btn ghost" data-act="cancel">Cancel</button>
+        <button class="btn primary" data-act="import" disabled>Import</button>
+      </div>
+    </div>`;
+
+  const close = () => {
+    scrim.hidden = true;
+    scrim.innerHTML = "";
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  document.addEventListener("keydown", onKey, true);
+
+  const results = $("#imp-results", scrim);
+  const go = $('[data-act="import"]', scrim);
+  const chosen = () => $$("[data-pick]:checked", results).map((c) => imp.books[Number(c.dataset.pick)]);
+  const MODES = [
+    ["copy", "Copy in", "Copies them into your library folder and leaves the originals alone."],
+    ["move", "Move in", "Moves them into your library folder, organized as Author/Title."],
+    ["inplace", "Leave where they are", "Adds them to Narratarr without touching the files. Single loose files are copied in."],
+  ];
+  const sync = () => {
+    const n = chosen().length;
+    go.disabled = !n;
+    go.textContent = n ? `Import ${n} book${n === 1 ? "" : "s"}` : "Import";
+    $$(".imp-mode button", results).forEach((b) => b.classList.toggle("on", b.dataset.mode === imp.mode));
+    const hint = $(".imp-mode-hint", results);
+    if (hint) hint.textContent = MODES.find((m) => m[0] === imp.mode)[2];
+  };
+
+  function render(res) {
+    imp.books = res.books;
+    imp.folder = res.folder;
+    const fresh = res.books.filter((b) => !b.in_library).length;
+    if (!res.books.length) {
+      results.innerHTML = `<div class="imp-empty">${I.search}<p>No audiobooks found in that folder. Narratarr looks for MP3, M4B, M4A, FLAC, OGG and Opus files.</p></div>`;
+      return sync();
+    }
+    imp.mode = res.books.every((b) => b.inside_library) ? "inplace" : "copy";
+    results.innerHTML = `
+      <div class="imp-head"><b>${res.books.length} book${res.books.length === 1 ? "" : "s"} found</b>
+        <span class="muted">${fresh} new</span>
+        <label class="imp-all"><input type="checkbox" id="imp-all" ${fresh ? "checked" : ""}> Select all new</label></div>
+      <div class="imp-list">${res.books.map((b, i) => `
+        <label class="imp-row ${b.in_library ? "done" : ""}">
+          <input type="checkbox" data-pick="${i}" ${b.in_library ? "disabled" : "checked"}>
+          <span class="imp-meta">
+            <input class="imp-title" data-edit="title" data-i="${i}" value="${esc(b.title)}" aria-label="Title" ${b.in_library ? "disabled" : ""}>
+            <input class="imp-author" data-edit="author" data-i="${i}" value="${esc(b.author)}" placeholder="Unknown author" aria-label="Author" ${b.in_library ? "disabled" : ""}>
+            <small>${b.in_library ? "Already in your library · " : ""}${b.files} file${b.files === 1 ? "" : "s"} · ${esc(fmtBytes(b.bytes))}${b.format ? ` · ${esc(b.format)}` : ""}</small>
+          </span>
+        </label>`).join("")}
+      </div>
+      <div class="imp-mode-row">
+        <div class="segmented imp-mode">${MODES.map(([m, label]) => `<button type="button" data-mode="${m}">${label}</button>`).join("")}</div>
+        <span class="hint imp-mode-hint"></span>
+      </div>`;
+    sync();
+  }
+
+  async function scan(path) {
+    if (!path.trim()) return;
+    const btn = $("#imp-scan", scrim);
+    spinBtn(btn, true);
+    results.innerHTML = `<div class="imp-empty"><span class="spinner"></span><p>Looking through ${esc(path)}…</p></div>`;
+    try {
+      render(await api("/api/import/scan", { method: "POST", body: { folder: path } }));
+    } catch (e) {
+      results.innerHTML = `<div class="state failed" style="margin-top:16px">${esc(e.message)}</div>`;
+    }
+    spinBtn(btn, false);
+  }
+
+  $("#imp-form", scrim).onsubmit = (e) => { e.preventDefault(); scan($("#imp-folder", scrim).value); };
+  scrim.oninput = (e) => {
+    const ed = e.target.closest("[data-edit]");
+    if (ed) imp.books[Number(ed.dataset.i)][ed.dataset.edit] = ed.value;
+  };
+  scrim.onchange = (e) => {
+    if (e.target.id === "imp-all") $$("[data-pick]:not(:disabled)", results).forEach((c) => { c.checked = e.target.checked; });
+    sync();
+  };
+  scrim.onclick = async (e) => {
+    if (e.target === scrim || e.target.closest('[data-act="cancel"]')) return close();
+    const quick = e.target.closest("[data-folder]");
+    if (quick) { $("#imp-folder", scrim).value = quick.dataset.folder; return scan(quick.dataset.folder); }
+    const mode = e.target.closest("[data-mode]");
+    if (mode) { imp.mode = mode.dataset.mode; return sync(); }
+    if (e.target.closest('[data-act="import"]')) {
+      const books = chosen().map((b) => ({ path: b.path, title: b.title, author: b.author }));
+      spinBtn(go, true);
+      try {
+        const r = await api("/api/import", { method: "POST", body: { folder: imp.folder, mode: imp.mode, books } });
+        close();
+        await refreshLibrary();
+        toast(r.added ? `${r.added} book${r.added === 1 ? "" : "s"} ${imp.mode === "inplace" ? "added to your library" : "on the way into your library"}` : "Those books are already in your library",
+          { kind: "ok" });
+      } catch (err) {
+        toast(err.message, { kind: "err" });
+        spinBtn(go, false);
+      }
+    }
+  };
+  if (folder) scan(folder); else $("#imp-folder", scrim).focus();
+}
+
+// ---------------------------------------------------------------------------
+// Authors & series you follow
+
+function portraitHTML(f, cls = "") {
+  const initials = (f.name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+  return `<div class="portrait ${f.kind} ${cls}" style="--h:${hue(f.name)}">${f.image
+    ? `<img src="${esc(f.image)}" alt="" loading="lazy" onerror="this.remove()">` : ""}<span>${esc(initials)}</span></div>`;
+}
+
+function Authors(root, param) {
+  if (param) return AuthorDetail(root, Number(param));
+  const st = state.settings || {};
+  root.innerHTML = `
+    <header>
+      <div class="eyebrow">Following</div>
+      <h1 class="page-title">Authors &amp; <em>series</em></h1>
+      <p class="lede">Follow an author or a series and their new books go straight to Wanted, then download as soon as they turn up on your indexers.</p>
+    </header>
+    ${!st.prowlarr_configured ? `
+      <div class="banner">
+        <div class="ico">${I.key}</div>
+        <div><strong>Connect Prowlarr so Narratarr can find these books</strong><p>You can follow authors now. Their books will wait in Wanted until Prowlarr is set up.</p></div>
+        <a class="btn" href="#/settings">Open Settings</a>
+      </div>` : ""}
+    <div class="search-wrap follow-search">
+      <form class="search" id="author-form" role="search">
+        ${I.search}
+        <input id="aq" type="search" placeholder="Follow an author… e.g. Brandon Sanderson" autocomplete="off" aria-label="Find an author to follow" />
+        <button class="btn primary" type="submit">Find</button>
+      </form>
+      <div class="suggest" id="author-results" hidden></div>
+    </div>
+    <div class="section-head"><h2>You follow</h2><span class="muted" id="follow-count"></span></div>
+    <div class="follow-grid" id="follows"></div>`;
+
+  function render() {
+    const list = state.follows;
+    $("#follow-count", root).textContent = list.length ? `${list.length}` : "";
+    $("#follows", root).innerHTML = list.length ? list.map((f, i) => `
+      <a class="follow-card" href="#/authors/${f.id}" style="animation-delay:${Math.min(i, 12) * 35}ms">
+        ${portraitHTML(f)}
+        <b>${esc(f.name)}</b>
+        <small>${f.kind === "author" ? "Author" : "Series"} · ${f.in_library} in library${f.wanted ? ` · ${f.wanted} wanted` : ""}</small>
+      </a>`).join("") : `
+      <div class="empty" style="grid-column:1/-1">
+        <div class="art">${I.books}</div>
+        <h3>Never miss a new release</h3>
+        <p>Search for an author above, or open any book from the Audible catalog and choose Follow.</p>
+      </div>`;
+  }
+
+  const results = $("#author-results", root);
+  let timer = 0, token = 0;
+  async function find(q) {
+    const mine = ++token;
+    if (q.trim().length < 2) { results.hidden = true; return; }
+    results.hidden = false;
+    results.innerHTML = `<div class="label">Authors</div><div style="padding:14px;color:var(--text-3)"><span class="spinner"></span></div>`;
+    try {
+      const found = await api(`/api/authors/search?${new URLSearchParams({ q })}`);
+      if (mine !== token) return;
+      results.innerHTML = found.length ? `<div class="label">Authors on Audible</div>` + found.map((a, i) => {
+        const f = state.follows.find((x) => x.kind === "author" && x.asin === a.asin);
+        return `<button type="button" data-author="${i}">
+          ${a.image ? `<img src="${esc(a.image)}" alt="" style="border-radius:50%">` : `<span class="ph" style="border-radius:50%"></span>`}
+          <span><b>${esc(a.name)}</b><small>${f ? "Following" : esc((a.description || "").slice(0, 90)) || "Follow"}</small></span>
+        </button>`;
+      }).join("") : `<div style="padding:14px 16px;color:var(--text-3)">No authors by that name on Audible.</div>`;
+      results._found = found;
+    } catch (e) {
+      results.innerHTML = `<div style="padding:14px 16px;color:var(--err)">${esc(e.message)}</div>`;
+    }
+  }
+  $("#aq", root).oninput = (e) => { clearTimeout(timer); timer = setTimeout(() => find(e.target.value), 350); };
+  $("#author-form", root).onsubmit = (e) => { e.preventDefault(); find($("#aq", root).value); };
+  results.onclick = async (e) => {
+    const b = e.target.closest("[data-author]");
+    if (!b) return;
+    const a = results._found[Number(b.dataset.author)];
+    const existing = state.follows.find((x) => x.kind === "author" && x.asin === a.asin);
+    if (existing) { location.hash = `#/authors/${existing.id}`; return; }
+    try {
+      const f = await confirmFollow({ kind: "author", asin: a.asin, name: a.name });
+      if (f) { results.hidden = true; $("#aq", root).value = ""; render(); }
+    } catch (err) { toast(err.message, { kind: "err" }); }
+  };
+  const outside = (e) => { if (!e.target.closest(".follow-search")) results.hidden = true; };
+  document.addEventListener("click", outside);
+
+  render();
+  refreshFollows().then(render);
+  return { destroy() { document.removeEventListener("click", outside); }, update(structural) { if (structural) refreshFollows().then(render); } };
+}
+
+function AuthorDetail(root, id) {
+  const f0 = state.follows.find((f) => f.id === id);
+  let data = null;
+  root.innerHTML = `
+    <a class="back-link" href="#/authors"><svg viewBox="0 0 24 24"><path d="m14.5 6-6 6 6 6"/></svg> Authors &amp; series</a>
+    <header class="author-hero">
+      ${portraitHTML(f0 || { name: "", kind: "author" }, "big")}
+      <div class="author-copy">
+        <div class="eyebrow">${f0?.kind === "series" ? "Series" : "Author"}</div>
+        <h1 class="page-title">${esc(f0?.name || "Loading…")}</h1>
+        <p class="bio" id="bio"></p>
+        <div class="hero-actions" id="hero-actions"></div>
+      </div>
+    </header>
+    <div class="stats" id="a-stats"></div>
+    <div class="section-head"><h2>Books</h2><span class="muted" id="a-count"></span></div>
+    <div class="grid" id="a-books">${skeletons(10)}</div>`;
+
+  const libFor = (b) => b.library && state.library.find((x) => x.id === b.library.id);
+  function render() {
+    if (!data) return;
+    const books = data.books.map((b) => ({ ...b, source: "audible", posted: b.released }));
+    const have = books.filter((b) => libFor(b));
+    const missing = books.length - have.length;
+    const mine = [...new Map(have.map((b) => [libFor(b).id, libFor(b)])).values()];  // one per library book
+    $("#a-stats", root).innerHTML = [
+      [books.length, data.kind === "author" ? "Books on Audible" : "Books in the series"],
+      [mine.filter((b) => b.status === "completed").length, "In your library"],
+      [mine.filter((b) => b.status !== "completed").length, "Wanted or downloading"],
+      [missing, "Not added yet"],
+    ].map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join("");
+    $("#a-count", root).textContent = data.kind === "series" ? "In reading order" : "Newest first";
+    $("#hero-actions", root).innerHTML = `
+      ${missing ? `<button class="btn primary" data-act="want-all">${I.bookmark} Add ${missing} missing to Wanted</button>` : ""}
+      <button class="btn ghost danger" data-act="unfollow">Unfollow</button>`;
+    $("#a-books", root).innerHTML = books.length ? books.map((b, i) => cardHTML(b, libFor(b), i)).join("")
+      : `<div class="empty" style="grid-column:1/-1"><h3>No books yet</h3><p>Audible doesn't list any books here yet.</p></div>`;
+    root._books = books;
+  }
+
+  async function load() {
+    try {
+      data = await api(`/api/follows/${id}`);
+    } catch (e) {
+      $("#a-books", root).innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="art">${I.alert}</div><h3>Couldn’t load this page</h3><p>${esc(e.message)}</p><a class="btn" href="#/authors">Back to Authors</a></div>`;
+      return;
+    }
+    $(".author-hero", root).querySelector(".portrait").outerHTML = portraitHTML(data, "big");
+    $(".author-hero h1", root).textContent = data.name;
+    $(".author-hero .eyebrow", root).textContent = data.kind === "series" ? "Series" : "Author";
+    const bio = $("#bio", root);
+    bio.textContent = data.description || "";
+    bio.classList.toggle("clamped", (data.description || "").length > 360);
+    render();
+  }
+
+  root.onclick = async (e) => {
+    const act = e.target.closest("[data-act]");
+    if (act?.dataset.act === "unfollow") {
+      const res = await modal({
+        title: `Unfollow ${data?.name || "this"}?`, body: "New books won't be added to Wanted any more.", confirm: "Unfollow", danger: true,
+        extra: `<label class="switch"><input type="checkbox" name="purge"><i></i>Also remove their books that are still only Wanted</label>`,
+      });
+      if (!res) return;
+      await api(`/api/follows/${id}?remove_wanted=${!!res.purge}`, { method: "DELETE" });
+      await Promise.all([refreshFollows(), refreshLibrary()]);
+      toast(`Unfollowed ${data?.name || ""}`);
+      location.hash = "#/authors";
+      return;
+    }
+    if (act?.dataset.act === "want-all") {
+      spinBtn(act, true);
+      try {
+        const r = await api(`/api/follows/${id}/want-all`, { method: "POST" });
+        await refreshLibrary();
+        toast(`${r.added} book${r.added === 1 ? "" : "s"} added to Wanted`, { kind: "ok" });
+        await load();
+      } catch (err) { toast(err.message, { kind: "err" }); spinBtn(act, false); }
+      return;
+    }
+    const play = e.target.closest("[data-play]");
+    if (play) return playBook(Number(play.dataset.play));
+    const card = e.target.closest(".card[data-url]");
+    if (!card || !root._books) return;
+    const b = root._books.find((x) => x.url === card.dataset.url);
+    const lib = libFor(b);
+    if (e.target.closest("[data-quick]")) {
+      const q = e.target.closest("[data-quick]");
+      spinBtn(q, true);
+      try { await addBook(b.url, { cover: b.cover_url, title: b.title, source: "audible" }); await load(); }
+      catch (err) { toast(err.message, { kind: "err" }); spinBtn(q, false); }
+      return;
+    }
+    if (lib) openDrawer({ bookId: lib.id });
+    else openDrawer({ url: b.url, preview: b, source: "audible" });
+  };
+  root.onkeydown = (e) => { if (e.key === "Enter" && e.target.matches(".card")) e.target.click(); };
+
+  load();
+  return { update(structural) { if (structural) render(); } };
+}
+
+// ---------------------------------------------------------------------------
 // Activity
 
 function jobDetail(b) {
@@ -673,10 +1046,9 @@ function jobDetail(b) {
   return parts.map((p) => `<span>${p}</span>`).join("");
 }
 
-function stepsHTML(status, source, protocol) {
-  const phases = protocol === "usenet" ? [["resolving", "Resolve"], ["downloading", "SABnzbd"], ["organizing", "Organize"]]
-    : isDirect(source) ? PHASES.filter(([s]) => s !== "caching") : PHASES;
-  const idx = phases.findIndex(([s]) => s === status);
+function stepsHTML(b) {
+  const phases = phasesFor(b);
+  const idx = phases.findIndex(([s]) => s === b.status);
   return `<div class="steps">${phases.map(([, label], i) =>
     `<span class="step ${idx > i ? "done" : idx === i ? "now" : ""}"><i></i>${label}</span>`).join("")}</div>`;
 }
@@ -705,7 +1077,7 @@ function Activity(root) {
         <div style="min-width:0">
           <h3>${esc(b.title)}</h3>
           <div class="by">${esc(b.author)}</div>
-          ${stepsHTML(b.status, b.source, b.protocol)}
+          ${stepsHTML(b)}
           <div class="progress ${["caching", "downloading"].includes(b.status) ? "" : "indeterminate"}"><i style="width:${b.progress || 0}%"></i></div>
           <div class="detail">${jobDetail(b)}</div>
         </div>
@@ -767,21 +1139,6 @@ function Settings(root) {
     </header>
     <form id="settings" class="settings" autocomplete="off">
       <section class="panel">
-        <div><h3>Real-Debrid</h3><p class="desc">Fetches the files for you. Find your key at <a href="https://real-debrid.com/apitoken" target="_blank" rel="noopener">real-debrid.com/apitoken</a>.</p></div>
-        <div class="body">
-          <div class="field">
-            <label for="rd_api_key">API key</label>
-            <div class="input-row">
-              <input class="input mono" id="rd_api_key" name="rd_api_key" type="password" placeholder="Paste your private API token" value="${esc(s.rd_api_key)}" />
-              <button class="btn" type="button" id="test-rd">Test</button>
-            </div>
-          </div>
-          <div id="rd-result"></div>
-          <label class="switch"><input type="checkbox" name="delete_from_rd_after" ${s.delete_from_rd_after ? "checked" : ""}><i></i>Remove torrents from Real-Debrid after downloading</label>
-        </div>
-      </section>
-
-      <section class="panel">
         <div><h3>Library</h3><p class="desc">Where finished audiobooks go, and how folders are named.</p></div>
         <div class="body">
           <div class="field">
@@ -798,6 +1155,173 @@ function Settings(root) {
             <label for="max_concurrent">Simultaneous downloads</label>
             <input class="input" id="max_concurrent" name="max_concurrent" type="number" min="1" max="8" value="${esc(s.max_concurrent)}" style="width:120px" />
           </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div><h3>Prowlarr</h3><p class="desc">Optional. Search the indexers you’ve added to Prowlarr, and find books on your Wanted list. Results download through your Usenet or torrent client below.</p></div>
+        <div class="body">
+          <div class="field"><label for="prowlarr_url">Prowlarr address</label><input class="input mono" id="prowlarr_url" name="prowlarr_url" placeholder="http://localhost:9696" value="${esc(s.prowlarr_url)}" /></div>
+          <div class="field">
+            <label for="prowlarr_api_key">API key</label>
+            <div class="input-row">
+              <input class="input mono" id="prowlarr_api_key" name="prowlarr_api_key" type="password" placeholder="Prowlarr → Settings → General → API Key" value="${esc(s.prowlarr_api_key)}" />
+              <button class="btn" type="button" id="test-prowlarr">Test</button>
+            </div>
+            <div id="prowlarr-result"></div>
+          </div>
+          <div class="field">
+            <label for="prowlarr_categories">Categories</label>
+            <input class="input mono" id="prowlarr_categories" name="prowlarr_categories" value="${esc(s.prowlarr_categories)}" style="max-width:220px" />
+            <span class="hint"><code>3030</code> is Audio › Audiobook. Separate several with commas.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div><h3>Torrents</h3><p class="desc">How torrents download. Real-Debrid fetches them for you, so nothing is shared from your computer. qBittorrent and Transmission download them on your own machine and keep seeding afterwards.</p></div>
+        <div class="body">
+          <div class="field">
+            <label>Download torrents with</label>
+            <div class="segmented" data-choice="torrent_client" role="radiogroup" aria-label="Torrent client">
+              <button type="button" role="radio" data-v="realdebrid">Real-Debrid</button>
+              <button type="button" role="radio" data-v="qbittorrent">qBittorrent</button>
+              <button type="button" role="radio" data-v="transmission">Transmission</button>
+            </div>
+            <input type="hidden" name="torrent_client" value="${esc(s.torrent_client)}" />
+          </div>
+          <div class="client-fields" data-for="torrent_client:realdebrid">
+            <div class="field">
+              <label for="rd_api_key">Real-Debrid API key</label>
+              <div class="input-row">
+                <input class="input mono" id="rd_api_key" name="rd_api_key" type="password" placeholder="Paste your private API token" value="${esc(s.rd_api_key)}" />
+                <button class="btn" type="button" id="test-rd">Test</button>
+              </div>
+              <span class="hint">Find it at <a href="https://real-debrid.com/apitoken" target="_blank" rel="noopener" style="color:var(--accent)">real-debrid.com/apitoken</a>.</span>
+            </div>
+            <div id="rd-result"></div>
+            <label class="switch"><input type="checkbox" name="delete_from_rd_after" ${s.delete_from_rd_after ? "checked" : ""}><i></i>Remove torrents from Real-Debrid after downloading</label>
+          </div>
+          <div class="client-fields" data-for="torrent_client:qbittorrent">
+            <div class="field"><label for="qbittorrent_url">qBittorrent Web UI address</label><input class="input mono" id="qbittorrent_url" name="qbittorrent_url" placeholder="http://localhost:8080" value="${esc(s.qbittorrent_url)}" /></div>
+            <div class="input-row two">
+              <div class="field"><label for="qbittorrent_username">Username</label><input class="input mono" id="qbittorrent_username" name="qbittorrent_username" value="${esc(s.qbittorrent_username)}" autocomplete="off" /></div>
+              <div class="field"><label for="qbittorrent_password">Password</label><input class="input mono" id="qbittorrent_password" name="qbittorrent_password" type="password" value="${esc(s.qbittorrent_password)}" /></div>
+            </div>
+            <div class="field">
+              <label for="qbittorrent_category">Category</label>
+              <div class="input-row">
+                <input class="input mono" id="qbittorrent_category" name="qbittorrent_category" value="${esc(s.qbittorrent_category)}" style="max-width:220px" />
+                <button class="btn" type="button" data-test-client="qbittorrent">Test</button>
+              </div>
+              <div data-result="qbittorrent"></div>
+            </div>
+          </div>
+          <div class="client-fields" data-for="torrent_client:transmission">
+            <div class="field"><label for="transmission_url">Transmission address</label><input class="input mono" id="transmission_url" name="transmission_url" placeholder="http://localhost:9091" value="${esc(s.transmission_url)}" /></div>
+            <div class="input-row two">
+              <div class="field"><label for="transmission_username">Username</label><input class="input mono" id="transmission_username" name="transmission_username" value="${esc(s.transmission_username)}" autocomplete="off" placeholder="If you set one" /></div>
+              <div class="field"><label for="transmission_password">Password</label><input class="input mono" id="transmission_password" name="transmission_password" type="password" value="${esc(s.transmission_password)}" /></div>
+            </div>
+            <div><button class="btn" type="button" data-test-client="transmission">Test connection</button><div data-result="transmission"></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div><h3>Usenet</h3><p class="desc">Optional. Downloads the Usenet results you pick from Prowlarr, then Narratarr files them into your library.</p></div>
+        <div class="body">
+          <div class="field">
+            <label>Download Usenet releases with</label>
+            <div class="segmented" data-choice="usenet_client" role="radiogroup" aria-label="Usenet client">
+              <button type="button" role="radio" data-v="sabnzbd">SABnzbd</button>
+              <button type="button" role="radio" data-v="nzbget">NZBGet</button>
+            </div>
+            <input type="hidden" name="usenet_client" value="${esc(s.usenet_client)}" />
+          </div>
+          <div class="client-fields" data-for="usenet_client:sabnzbd">
+            <div class="field"><label for="sabnzbd_url">SABnzbd address</label><input class="input mono" id="sabnzbd_url" name="sabnzbd_url" placeholder="http://localhost:8080" value="${esc(s.sabnzbd_url)}" /></div>
+            <div class="field">
+              <label for="sabnzbd_api_key">API key</label>
+              <div class="input-row">
+                <input class="input mono" id="sabnzbd_api_key" name="sabnzbd_api_key" type="password" placeholder="SABnzbd → Config → General → API Key" value="${esc(s.sabnzbd_api_key)}" />
+                <button class="btn" type="button" data-test-client="sabnzbd">Test</button>
+              </div>
+              <div data-result="sabnzbd"></div>
+            </div>
+            <div class="field">
+              <label for="sabnzbd_category">Category</label>
+              <input class="input mono" id="sabnzbd_category" name="sabnzbd_category" placeholder="audiobooks" value="${esc(s.sabnzbd_category)}" style="max-width:220px" />
+              <span class="hint">Optional. Must already exist in SABnzbd. Leave empty to use its default.</span>
+            </div>
+          </div>
+          <div class="client-fields" data-for="usenet_client:nzbget">
+            <div class="field"><label for="nzbget_url">NZBGet address</label><input class="input mono" id="nzbget_url" name="nzbget_url" placeholder="http://localhost:6789" value="${esc(s.nzbget_url)}" /></div>
+            <div class="input-row two">
+              <div class="field"><label for="nzbget_username">Username</label><input class="input mono" id="nzbget_username" name="nzbget_username" value="${esc(s.nzbget_username)}" placeholder="nzbget" autocomplete="off" /></div>
+              <div class="field"><label for="nzbget_password">Password</label><input class="input mono" id="nzbget_password" name="nzbget_password" type="password" value="${esc(s.nzbget_password)}" /></div>
+            </div>
+            <div class="field">
+              <label for="nzbget_category">Category</label>
+              <div class="input-row">
+                <input class="input mono" id="nzbget_category" name="nzbget_category" placeholder="Audiobooks" value="${esc(s.nzbget_category)}" style="max-width:220px" />
+                <button class="btn" type="button" data-test-client="nzbget">Test</button>
+              </div>
+              <span class="hint">The username and password are NZBGet’s ControlUsername and ControlPassword (Settings → Security).</span>
+              <div data-result="nzbget"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div><h3>Download folders</h3><p class="desc">Only needed when your download clients and Narratarr see the downloads folder at different paths, such as separate Docker containers.</p></div>
+        <div class="body">
+          <div class="field">
+            <label for="path_remote">Path mapping</label>
+            <div class="input-row">
+              <input class="input mono" id="path_remote" name="path_remote" placeholder="The client's path, e.g. /downloads" value="${esc(s.path_remote)}" />
+              <input class="input mono" id="path_local" name="path_local" placeholder="Same folder here, e.g. /data/downloads" value="${esc(s.path_local)}" />
+            </div>
+            <span class="hint">Narratarr swaps the first for the second when a client reports where it saved a book.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div><h3>Wanted &amp; following</h3><p class="desc">Books you want but don’t have yet, including new releases from authors and series you follow.</p></div>
+        <div class="body">
+          <div class="field">
+            <label class="switch"><input type="checkbox" name="auto_search" ${s.auto_search ? "checked" : ""}><i></i>Search for Wanted books automatically</label>
+            <span class="hint">Uses Prowlarr. A few books are checked at a time to stay within your indexers’ API limits.</span>
+          </div>
+          <div class="field">
+            <label for="auto_search_hours">Look again every</label>
+            <div class="input-row" style="align-items:center;max-width:260px">
+              <input class="input" id="auto_search_hours" name="auto_search_hours" type="number" min="1" max="168" value="${esc(s.auto_search_hours)}" style="width:100px;flex:none" />
+              <span class="muted">hours</span>
+            </div>
+          </div>
+          <div class="field">
+            <label for="audible_region">Audible store for book details</label>
+            <select class="select" id="audible_region" name="audible_region" style="max-width:260px">
+              ${[["us", "United States"], ["uk", "United Kingdom"], ["ca", "Canada"], ["au", "Australia"], ["in", "India"], ["de", "Germany"], ["fr", "France"], ["it", "Italy"], ["es", "Spain"], ["jp", "Japan"]]
+                .map(([v, l]) => `<option value="${v}" ${s.audible_region === v ? "selected" : ""}>${l}</option>`).join("")}
+            </select>
+            <span class="hint">Only used for titles, covers, series and release dates. Nothing is downloaded from Audible.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div><h3>Import</h3><p class="desc">Bring in audiobooks you already have. Books dropped into the import folder are moved into your library automatically.</p></div>
+        <div class="body">
+          <div class="field">
+            <label for="import_folder">Import folder</label>
+            <input class="input mono" id="import_folder" name="import_folder" placeholder="e.g. ~/Downloads/Audiobooks to import" value="${esc(s.import_folder)}" />
+            <span class="hint">Checked every minute. A book is moved in once nothing in its folder has changed for two minutes.</span>
+          </div>
+          <div><button class="btn" type="button" id="open-import">${I.down} Import books now…</button></div>
         </div>
       </section>
 
@@ -829,54 +1353,6 @@ function Settings(root) {
           <div class="field">
             <label class="switch"><input type="checkbox" name="smart_search" ${s.smart_search ? "checked" : ""}><i></i>Smart search</label>
             <span class="hint">Fixes typos and suggests titles as you type, using Apple’s public audiobook catalog. What you type in the search box is sent to Apple.</span>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div><h3>Prowlarr</h3><p class="desc">Optional. Search the indexers you’ve added to Prowlarr. Usenet results download through SABnzbd, torrents through Real-Debrid.</p></div>
-        <div class="body">
-          <div class="field"><label for="prowlarr_url">Prowlarr address</label><input class="input mono" id="prowlarr_url" name="prowlarr_url" placeholder="http://localhost:9696" value="${esc(s.prowlarr_url)}" /></div>
-          <div class="field">
-            <label for="prowlarr_api_key">API key</label>
-            <div class="input-row">
-              <input class="input mono" id="prowlarr_api_key" name="prowlarr_api_key" type="password" placeholder="Prowlarr → Settings → General → API Key" value="${esc(s.prowlarr_api_key)}" />
-              <button class="btn" type="button" id="test-prowlarr">Test</button>
-            </div>
-            <div id="prowlarr-result"></div>
-          </div>
-          <div class="field">
-            <label for="prowlarr_categories">Categories</label>
-            <input class="input mono" id="prowlarr_categories" name="prowlarr_categories" value="${esc(s.prowlarr_categories)}" style="max-width:220px" />
-            <span class="hint"><code>3030</code> is Audio › Audiobook. Separate several with commas.</span>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div><h3>SABnzbd</h3><p class="desc">Optional. Downloads the Usenet results you pick from Prowlarr, then Narratarr files them into your library.</p></div>
-        <div class="body">
-          <div class="field"><label for="sabnzbd_url">SABnzbd address</label><input class="input mono" id="sabnzbd_url" name="sabnzbd_url" placeholder="http://localhost:8080" value="${esc(s.sabnzbd_url)}" /></div>
-          <div class="field">
-            <label for="sabnzbd_api_key">API key</label>
-            <div class="input-row">
-              <input class="input mono" id="sabnzbd_api_key" name="sabnzbd_api_key" type="password" placeholder="SABnzbd → Config → General → API Key" value="${esc(s.sabnzbd_api_key)}" />
-              <button class="btn" type="button" id="test-sabnzbd">Test</button>
-            </div>
-            <div id="sabnzbd-result"></div>
-          </div>
-          <div class="field">
-            <label for="sabnzbd_category">Category</label>
-            <input class="input mono" id="sabnzbd_category" name="sabnzbd_category" placeholder="audiobooks" value="${esc(s.sabnzbd_category)}" style="max-width:220px" />
-            <span class="hint">Optional. Must already exist in SABnzbd. Leave empty to use its default.</span>
-          </div>
-          <div class="field">
-            <label for="sabnzbd_remote_path">Path mapping</label>
-            <div class="input-row">
-              <input class="input mono" id="sabnzbd_remote_path" name="sabnzbd_remote_path" placeholder="SABnzbd’s folder, e.g. /downloads" value="${esc(s.sabnzbd_remote_path)}" />
-              <input class="input mono" id="sabnzbd_local_path" name="sabnzbd_local_path" placeholder="Same folder here, e.g. /data/usenet" value="${esc(s.sabnzbd_local_path)}" />
-            </div>
-            <span class="hint">Only needed when SABnzbd and Narratarr see the downloads folder at different paths, such as separate Docker containers.</span>
           </div>
         </div>
       </section>
@@ -920,11 +1396,28 @@ function Settings(root) {
   setProvider(s.search_provider || "audiobookbay");
   $("#provider", root).onclick = (e) => { const b = e.target.closest("[data-v]"); if (b) setProvider(b.dataset.v); };
 
+  // Client pickers: show the fields for the chosen client only.
+  const choose = (group, v) => {
+    form[group].value = v;
+    $$(`[data-choice="${group}"] button`, root).forEach((b) => {
+      b.classList.toggle("on", b.dataset.v === v);
+      b.setAttribute("aria-checked", b.dataset.v === v);
+    });
+    $$(`[data-for^="${group}:"]`, root).forEach((el) => { el.hidden = el.dataset.for !== `${group}:${v}`; });
+  };
+  $$("[data-choice]", root).forEach((seg) => {
+    choose(seg.dataset.choice, form[seg.dataset.choice].value);
+    seg.onclick = (e) => { const b = e.target.closest("[data-v]"); if (b) choose(seg.dataset.choice, b.dataset.v); };
+  });
+  $("#open-import", root).onclick = async () => { await save(true); openImport(form.import_folder.value); };
+
   const collect = () => {
     const data = Object.fromEntries(new FormData(form));
     data.delete_from_rd_after = form.delete_from_rd_after.checked;
     data.smart_search = form.smart_search.checked;
+    data.auto_search = form.auto_search.checked;
     data.max_concurrent = Number(data.max_concurrent) || 1;
+    data.auto_search_hours = Number(data.auto_search_hours) || 12;
     return data;
   };
 
@@ -933,8 +1426,9 @@ function Settings(root) {
     form.rd_api_key.value = state.settings.rd_api_key;
     form.audiobookshelf_token.value = state.settings.audiobookshelf_token;
     form.brave_api_key.value = state.settings.brave_api_key;
-    form.prowlarr_api_key.value = state.settings.prowlarr_api_key;
-    form.sabnzbd_api_key.value = state.settings.sabnzbd_api_key;
+    for (const key of ["prowlarr_api_key", "sabnzbd_api_key", "nzbget_password", "qbittorrent_password", "transmission_password"]) {
+      form[key].value = state.settings[key];
+    }
     state.sources = await api("/api/sources"); // the Prowlarr tab appears once it's set up
     updateRdPill();
     if (!quiet) toast("Settings saved", { kind: "ok" });
@@ -979,7 +1473,21 @@ function Settings(root) {
     };
   };
   tester("prowlarr", (r) => `Connected to Prowlarr ${esc(r.version)} · <b>${r.indexers}</b> indexer${r.indexers === 1 ? "" : "s"} enabled`);
-  tester("sabnzbd", (r) => `Connected to SABnzbd ${esc(r.version)}`);
+  $$("[data-test-client]", root).forEach((btn) => {
+    btn.onclick = async () => {
+      const name = btn.dataset.testClient;
+      const out = $(`[data-result="${name}"]`, root);
+      spinBtn(btn, true);
+      try {
+        await save(true);
+        const r = await api(`/api/settings/test-client/${name}`, { method: "POST" });
+        out.innerHTML = okLine(`Connected to ${esc(r.label)} ${esc(r.version)}`);
+      } catch (err) {
+        out.innerHTML = `<div class="rd-result bad">${esc(err.message)}</div>`;
+      }
+      spinBtn(btn, false);
+    };
+  });
 
   $("#test-rd", root).onclick = async (e) => {
     const btn = e.currentTarget;
@@ -1020,12 +1528,39 @@ function drawerBook() {
   return d.bookId ? state.library.find((b) => b.id === d.bookId) : byUrl().get(d.url);
 }
 
+function wantedNote(lib) {
+  const st = state.settings || {};
+  const out = Date.parse(lib.released || "");
+  if (out > Date.now()) return `Comes out ${releaseLabel(lib.released, true).replace(/^Out /, "")}. Narratarr will start looking then.`;
+  if (!st.prowlarr_configured) return "Connect Prowlarr in Settings so Narratarr can look for this book.";
+  const last = lib.last_searched ? `Last looked ${ago(lib.last_searched)}. ${lib.search_note || ""}` : "";
+  const next = st.auto_search ? `Narratarr looks again every ${st.auto_search_hours} hours.` : "Automatic search is off.";
+  return `${last} ${next}`.trim();
+}
+
 function liveHTML(lib) {
+  if (!lib && state.drawer?.source === "audible") {
+    return `<div class="cta">
+      <button class="btn primary" data-act="add">${I.bookmark} Add to Wanted</button>
+    </div>
+    <p class="cta-note">Narratarr will look for it on your indexers and download it when it turns up.</p>`;
+  }
   if (!lib) {
     return `<div class="cta">
       <button class="btn primary" data-act="add">${I.down} Download</button>
       <button class="btn" data-act="want">${I.bookmark} Add to Wanted</button>
     </div>`;
+  }
+  if (lib.status === "wanted" && lib.source === "audible") {
+    return `<div class="state wanted">
+        <div class="top"><span>${I.bookmark} Wanted</span><span>${lib.last_searched ? esc(ago(lib.last_searched)) : "Not searched yet"}</span></div>
+        <p>${esc(wantedNote(lib))}</p>
+      </div>
+      <div class="cta">
+        <button class="btn primary" data-act="download">${I.search} Search now</button>
+        <button class="btn" data-act="releases">${I.list} Pick a release</button>
+        <button class="btn ghost danger" data-act="remove">${I.trash} Remove</button>
+      </div>`;
   }
   if (ACTIVE.includes(lib.status)) {
     const measurable = ["caching", "downloading"].includes(lib.status);
@@ -1038,6 +1573,7 @@ function liveHTML(lib) {
   }
   if (lib.status === "completed") {
     const current = player.book?.id === lib.id;
+    const local = lib.source === "local";
     const left = lib.listen_duration - lib.listen_position;
     const label = current && player.playing ? `${I.pause} Pause`
       : !lib.finished && lib.listen_position > 30 && lib.listen_duration ? `${I.play} Resume · ${esc(fmtLeft(left))}`
@@ -1046,9 +1582,9 @@ function liveHTML(lib) {
         <button class="btn primary" data-act="play">${label}</button>
         <button class="btn ghost" data-act="toggle-finished">${lib.finished ? "Mark unfinished" : "Mark finished"}</button>
       </div>
-      <div class="state done">Downloaded ${esc(ago(lib.completed_at))} to<code>${esc(lib.path)}</code></div>
+      <div class="state done">${local ? "Imported" : "Downloaded"} ${esc(ago(lib.completed_at))}${local && lib.import_mode === "inplace" ? ", left where it was," : ""} to<code>${esc(lib.path)}</code></div>
       <div class="cta" style="margin-top:14px">
-        <button class="btn sm ghost" data-act="download">${I.retry} Download again</button>
+        ${local ? "" : `<button class="btn sm ghost" data-act="download">${I.retry} Download again</button>`}
         <button class="btn sm ghost danger" data-act="remove">${I.trash} Remove</button>
       </div>`;
   }
@@ -1056,13 +1592,99 @@ function liveHTML(lib) {
     return `<div class="state failed">${esc(lib.error || "Something went wrong.")}</div>
       <div class="cta">
         <button class="btn primary" data-act="download">${I.retry} Try again</button>
+        ${lib.source !== "local" ? `<button class="btn" data-act="releases">${I.list} Pick another release</button>` : ""}
         <button class="btn ghost danger" data-act="remove">${I.trash} Remove</button>
       </div>`;
   }
   return `<div class="cta">
       <button class="btn primary" data-act="download">${I.down} Download now</button>
+      <button class="btn" data-act="releases">${I.list} Other releases</button>
       <button class="btn ghost danger" data-act="remove">${I.trash} Remove</button>
     </div>`;
+}
+
+// ---- releases (pick one yourself) ----
+
+function releasesHTML(res) {
+  if (!res.items.length) {
+    return `<div class="releases"><h4>Releases</h4><p class="muted">Nothing on your indexers or LibriVox looks like this book yet.</p></div>`;
+  }
+  const label = (r) => r.source === "prowlarr" ? r.indexer || "Prowlarr" : sourceInfo(r.source).label;
+  return `<div class="releases">
+    <h4>Releases <small>${res.items.length} found · best matches first</small></h4>
+    ${res.items.map((r, i) => {
+      const quality = r.match >= res.auto_match ? "good" : r.match >= 75 ? "ok" : "weak";
+      const facts = [label(r), r.protocol === "usenet" ? "Usenet" : r.protocol === "torrent" ? "Torrent" : "Direct",
+        r.format, r.size, r.seeders != null ? `${r.seeders} seeder${r.seeders === 1 ? "" : "s"}` : "", r.posted].filter(Boolean);
+      return `<div class="rel">
+        <div class="rel-main"><b title="${esc(r.release || r.title)}">${esc(r.release || r.title)}</b>
+          <small>${facts.map(esc).join(" · ")}</small></div>
+        <span class="match ${quality}" title="How closely it matches the title and author">${r.match}%</span>
+        <button class="btn sm" data-grab="${i}" ${r.usable ? "" : `disabled title="Set up a download client for ${r.protocol === "usenet" ? "Usenet" : "torrents"} first"`}>Grab</button>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
+async function showReleases(lib) {
+  const box = $("#drawer-releases");
+  if (!box) return;
+  box.innerHTML = `<div class="releases"><h4>Releases</h4><p class="muted"><span class="spinner"></span> Searching your indexers… this can take a minute.</p></div>`;
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  try {
+    const res = await api(`/api/library/${lib.id}/releases`);
+    if (state.drawer?.bookId !== lib.id && drawerBook()?.id !== lib.id) return;
+    state.drawer.releases = res.items;
+    box.innerHTML = releasesHTML(res);
+  } catch (e) {
+    box.innerHTML = `<div class="releases"><h4>Releases</h4><div class="state failed">${esc(e.message)}</div></div>`;
+  }
+}
+
+// ---- following from the drawer ----
+
+function followHTML(b) {
+  if (!(b.source === "audible" || b.asin)) return "";
+  const series = (b.series || [])[0];
+  const author = (b.author || "").split(",")[0].trim();
+  const followed = (kind, key) => state.follows.find((f) => f.kind === kind && (kind === "series" ? f.asin === key : f.name === key));
+  const btn = (kind, key, label, data) => {
+    const f = followed(kind, key);
+    return f ? `<a class="btn sm ghost" href="#/authors/${f.id}">${I.check} Following ${esc(label)}</a>`
+      : `<button class="btn sm ghost" data-act="follow-${kind}" ${data}>${I.plus} Follow ${esc(label)}</button>`;
+  };
+  return `<div class="follow-row">
+    ${author ? btn("author", author, author, `data-name="${esc(author)}"`) : ""}
+    ${series?.asin ? btn("series", series.asin, series.title, `data-asin="${esc(series.asin)}" data-name="${esc(series.title)}"`) : ""}
+  </div>`;
+}
+
+async function followFromDrawer(kind, el) {
+  let asin = el.dataset.asin, name = el.dataset.name;
+  if (kind === "author") {
+    const found = await api(`/api/authors/search?${new URLSearchParams({ q: name })}`);
+    const hit = found.find((a) => a.name.toLowerCase() === name.toLowerCase()) || found[0];
+    if (!hit) throw new Error(`Couldn't find ${name} in Audible's catalog.`);
+    asin = hit.asin;
+    name = hit.name;
+  }
+  return confirmFollow({ kind, asin, name });
+}
+
+async function confirmFollow({ kind, asin, name }) {
+  const res = await modal({
+    title: `Follow ${name}?`,
+    body: kind === "author"
+      ? "Their new books will be added to Wanted and downloaded as soon as they show up on your indexers."
+      : "New books in this series will be added to Wanted and downloaded as soon as they show up on your indexers.",
+    confirm: "Follow",
+    extra: `<label class="switch"><input type="checkbox" name="existing"><i></i>Also add the books already out to Wanted</label>`,
+  });
+  if (!res) return null;
+  const f = await api("/api/follows", { method: "POST", body: { kind, asin, name, add_existing: !!res.existing } });
+  await Promise.all([refreshFollows(), refreshLibrary()]);
+  toast(`Following ${f.name}${f.added ? ` · ${f.added} book${f.added === 1 ? "" : "s"} added to Wanted` : ""}`, { kind: "ok", cover: f.image });
+  return f;
 }
 
 function updateDrawerLive() {
@@ -1083,6 +1705,7 @@ function drawerHTML(b, loading) {
     b.size && [I.disc, b.size],
     b.language && [I.globe, b.language],
     isDirect(b.source) && [I.check, "Free & legal"],
+    releaseLabel(b.released) && [I.clock, releaseLabel(b.released)],
     b.protocol === "usenet" && [I.down, "Usenet"],
     b.protocol === "torrent" && [I.down, b.seeders != null ? `Torrent · ${b.seeders} seeder${b.seeders === 1 ? "" : "s"}` : "Torrent"],
   ].filter(Boolean);
@@ -1097,15 +1720,20 @@ function drawerHTML(b, loading) {
       ${narrators.length ? `<div class="narr">Narrated by ${esc(narrators.slice(0, 3).join(", "))}${narrators.length > 3 ? ` +${narrators.length - 3} more` : ""}</div>` : ""}
       ${pills.length ? `<div class="pills">${pills.map(([ic, t]) => `<span class="pill">${ic}${esc(t)}</span>`).join("")}</div>` : ""}
       <div id="drawer-live">${loading ? '<div class="cta"><span class="spinner" style="color:var(--text-3)"></span></div>' : ""}</div>
+      ${!loading ? followHTML(b) : ""}
+      <div id="drawer-releases"></div>
       ${desc ? `<div class="about"><h4>About this book</h4><p class="${desc.length > 520 ? "clamped" : ""}">${esc(desc)}</p>${desc.length > 520 ? '<button class="more" data-more>Read more</button>' : ""}</div>` : ""}
       ${!loading ? `<dl>
-        ${(b.categories || []).length ? `<dt>Genres</dt><dd>${esc(b.categories.join(", "))}</dd>` : ""}
-        ${b.posted ? `<dt>Posted</dt><dd>${esc(b.posted)}</dd>` : ""}
+        ${(b.series || []).length ? `<dt>Series</dt><dd>${b.series.map((x) => esc(x.sequence ? `${x.title} #${x.sequence}` : x.title)).join(" · ")}</dd>` : ""}
+        ${(b.categories || []).length && b.source !== "audible" ? `<dt>Genres</dt><dd>${esc(b.categories.join(", "))}</dd>` : ""}
+        ${b.released ? `<dt>Released</dt><dd>${esc(releaseLabel(b.released, true))}</dd>` : ""}
+        ${b.posted && !b.released ? `<dt>Posted</dt><dd>${esc(b.posted)}</dd>` : ""}
         ${b.info_hash ? `<dt>Info hash</dt><dd class="mono">${esc(b.info_hash)}</dd>` : ""}
         ${(b.files || []).length ? `<dt>Files</dt><dd>${b.files.length} ${esc(b.format || "audio")} file${b.files.length === 1 ? "" : "s"}${b.size ? ` · ${esc(b.size)}` : ""}</dd>` : ""}
         ${b.release ? `<dt>Release</dt><dd class="mono">${esc(b.release)}</dd>` : ""}
         ${b.indexer ? `<dt>Indexer</dt><dd>${esc(b.indexer)}</dd>` : ""}
-        <dt>Source</dt><dd>${/^https?:/.test(b.url || b.source_url || "")
+        <dt>Source</dt><dd>${b.source === "local" ? `Your files${b.import_mode === "inplace" ? " (left in place)" : ""}`
+          : /^https?:/.test(b.url || b.source_url || "")
           ? `<a href="${esc(b.url || b.source_url)}" target="_blank" rel="noopener noreferrer">${esc(sourceInfo(b.source).label)}${isDirect(b.source) ? " on Internet Archive" : ""} ↗</a>`
           : esc(sourceInfo(b.source).label)}</dd>
       </dl>` : ""}
@@ -1149,6 +1777,7 @@ async function openDrawer({ url, bookId, preview, source }) {
     const merged = { ...preview };
     for (const [k, v] of Object.entries(details)) if (v !== "" && !(Array.isArray(v) && !v.length)) merged[k] = v;
     merged.library = details.library;
+    state.drawer.details = merged;
     paintDrawer(merged, false);
   } catch (e) {
     if (state.drawer?.url !== url) return;
@@ -1165,9 +1794,26 @@ drawer.onclick = async (e) => {
     e.target.remove();
     return;
   }
+  const grabBtn = e.target.closest("[data-grab]");
+  if (grabBtn && state.drawer?.releases) {
+    const r = state.drawer.releases[Number(grabBtn.dataset.grab)];
+    const lib = drawerBook();
+    spinBtn(grabBtn, true);
+    try {
+      await api(`/api/library/${lib.id}/grab`, { method: "POST", body: { url: r.url, source: r.source } });
+      $("#drawer-releases").innerHTML = "";
+      await refreshLibrary();
+      toast(`Grabbed ${r.release || r.title}`, { kind: "ok", cover: lib.cover_url });
+    } catch (err) {
+      toast(err.message, { kind: "err" });
+      spinBtn(grabBtn, false);
+    }
+    return;
+  }
   const btn = e.target.closest("[data-act]");
   if (!btn || !state.drawer) return;
   const act = btn.dataset.act;
+  if (act === "releases") return showReleases(drawerBook());
   spinBtn(btn, true);
   try {
     if (act === "add" || act === "want") {
@@ -1178,6 +1824,13 @@ drawer.onclick = async (e) => {
         toast("Saved to Wanted", { kind: "ok" });
       } else {
         await addBook(url, { cover: $(".hero-cover img", drawer)?.src, source: state.drawer.source, protocol: state.drawer.protocol });
+      }
+    } else if (act === "follow-author" || act === "follow-series") {
+      spinBtn(btn, false);
+      if (await followFromDrawer(act.slice(7), btn)) {
+        const lib = drawerBook();
+        const fr = $(".follow-row", drawer);
+        if (fr) fr.outerHTML = followHTML(lib || { ...state.drawer.details, source: state.drawer.source });
       }
     } else if (act === "play") {
       spinBtn(btn, false);
@@ -1213,10 +1866,11 @@ document.addEventListener("keydown", (e) => {
 
 async function boot() {
   try {
-    [state.settings, state.sources, state.library] = await Promise.all([
+    [state.settings, state.sources, state.library, state.follows] = await Promise.all([
       api("/api/settings"),
       api("/api/sources"),
       api("/api/library"),
+      api("/api/follows").catch(() => []),
     ]);
   } catch (e) {
     toast(`Couldn’t reach Narratarr: ${e.message}`, { kind: "err" });

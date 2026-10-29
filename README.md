@@ -73,7 +73,9 @@ No other app needed. You get chapters (including the chapter markers inside `.m4
 - **Continue listening** shelf and finished-book tracking
 - Looks at home on a **phone**: add it to your home screen and listen anywhere on your Wi-Fi
 - **Light and dark** themes that follow your system
-- Plugs into your **\*arr stack**: search your **Prowlarr** indexers and download Usenet releases with **SABnzbd**
+- Plugs into your **\*arr stack**: **Prowlarr** for search; **SABnzbd** or **NZBGet** for Usenet; **qBittorrent**, **Transmission** or Real-Debrid for torrents
+- **Wanted list** that fills itself: follow **authors and series** and new releases are found and downloaded automatically
+- **Import** the audiobooks you already have, or point it at an existing Audiobookshelf library
 - Optional **Audiobookshelf** rescan after every download, so your other apps see new books right away
 - Optional **password** for when it's reachable from your network
 - **Pluggable sources**: adding a new catalog is one small Python class
@@ -197,7 +199,8 @@ uv sync && uv run narratarr
 2. Search for something, or tap a genre like **Mystery** or **Sci-Fi**.
 3. Open a book and press **Download**. You can watch its progress on the **Activity** page.
 4. When it's done, find it in your **Library** and press ▶︎.
-5. *(Optional)* In **Settings**, choose your library folder, turn on Audiobookshelf, or connect other sources.
+5. *(Optional)* Already have audiobooks? **Library → Import books** brings them in.
+6. *(Optional)* In **Settings**, choose your library folder, connect Prowlarr and your download clients, or turn on Audiobookshelf.
 
 <br>
 
@@ -207,8 +210,10 @@ uv sync && uv run narratarr
 flowchart LR
     A["🔎 Discover & search"] --> B{"Which source?"}
     B -- "LibriVox · Old-Time Radio" --> C["⬇️ Direct HTTPS download<br/>from the Internet Archive"]
-    B -- "Torrents · AudiobookBay, Prowlarr" --> D["🧲 Info hash → Real-Debrid<br/>cached, then unrestricted"]
-    B -- "Usenet · Prowlarr" --> U["📰 NZB → SABnzbd<br/>downloaded and unpacked"]
+    B -- "Torrents · AudiobookBay, Prowlarr" --> D["🧲 Real-Debrid, qBittorrent<br/>or Transmission"]
+    B -- "Usenet · Prowlarr" --> U["📰 SABnzbd or NZBGet<br/>downloaded and unpacked"]
+    W["⭐ Wanted · followed authors"] -- "searched automatically" --> B
+    I["📁 Books you already have"] --> E
     C --> E["🗂️ Organize<br/>Author / Title · cover · description"]
     D --> E
     U --> E
@@ -220,7 +225,7 @@ flowchart LR
 | Step | What happens |
 | --- | --- |
 | **Queue** | Books you add wait in a queue (2 at a time by default). Interrupted downloads pick up again when the app restarts. |
-| **Fetch** | Free sources download straight over HTTPS. Torrents go through [Real-Debrid](https://real-debrid.com), so nothing is ever seeded from your machine. Usenet releases are handed to your [SABnzbd](https://sabnzbd.org), and Narratarr picks up the files when it has finished unpacking. |
+| **Fetch** | Free sources download straight over HTTPS. Torrents go through [Real-Debrid](https://real-debrid.com) (nothing is shared from your machine) or your own qBittorrent or Transmission. Usenet releases go to your SABnzbd or NZBGet, and Narratarr picks up the files when it has finished unpacking. |
 | **Organize** | Archives are unzipped safely, files move into `{author}/{title}` (configurable), and `cover.jpg`, `desc.txt` and `reader.txt` are written next to them, the layout Audiobookshelf expects. |
 | **Listen** | The player treats a book as one timeline, whether it's a single `.m4b` or 40 `.mp3` parts, and streams it to any browser with seeking. |
 
@@ -231,42 +236,77 @@ flowchart LR
 | **LibriVox** | ~22,000 public-domain audiobooks read by volunteers: Austen, Doyle, Dickens, Poe, Twain… | Free, direct from the Internet Archive |
 | **Old-Time Radio** | ~9,000 classic radio dramas and comedies, 1930s–60s | Free, direct from the Internet Archive. Some full series are several GB, and the size is shown before you download |
 | **AudiobookBay** *(optional)* | Torrent listings | Via Real-Debrid (paid account required) |
-| **Prowlarr** *(optional)* | Whatever indexers you've added to your own [Prowlarr](https://prowlarr.com) | Usenet via SABnzbd, torrents via Real-Debrid |
+| **Prowlarr** *(optional)* | Whatever indexers you've added to your own [Prowlarr](https://prowlarr.com) | Usenet via SABnzbd or NZBGet; torrents via Real-Debrid, qBittorrent or Transmission |
+| **Audible catalog** *(with Prowlarr)* | Every audiobook in Audible's store, with covers, series and release dates | Nothing downloads from Audible: books go to **Wanted** and Narratarr finds them on your indexers (or free on LibriVox) |
 
 Narratarr deliberately sticks to the Internet Archive's **curated** LibriVox and Old-Time Radio collections. The Archive's general uploads include copyrighted audiobooks posted without permission, so those are left out.
 
-### Prowlarr and SABnzbd
+<a id="prowlarr-and-sabnzbd"></a>
 
-Already running an \*arr stack? Narratarr can search the indexers in your Prowlarr and hand Usenet downloads to SABnzbd, the same way Sonarr and Radarr do.
+### Your \*arr stack: Prowlarr and download clients
 
-1. **Settings → Prowlarr:** enter its address (e.g. `http://localhost:9696`) and the API key from *Prowlarr → Settings → General*, then press **Test**. A **Prowlarr** tab appears on Discover.
-2. **Settings → SABnzbd:** enter its address (e.g. `http://localhost:8080`) and the API key from *SABnzbd → Config → General*, then press **Test**. Optionally pick a category, such as `audiobooks`.
-3. Search on the Prowlarr tab. Each result shows its indexer, size, format, and whether it's Usenet or a torrent. Open one and Narratarr matches the release name to the real book, so it's filed under the right author and title, with cover art.
+Already running an \*arr stack? Narratarr searches the indexers in your Prowlarr and hands downloads to your own clients, the same way Sonarr and Radarr do.
 
-Usenet results go to SABnzbd. When SABnzbd has downloaded, repaired and unpacked a release, Narratarr moves the files into your library and clears the job from SABnzbd's history. Torrent results go through Real-Debrid. Stopping or removing a book in Narratarr also removes it from SABnzbd's queue.
+| Settings section | Choose | Where to find what it asks for |
+| --- | --- | --- |
+| **Prowlarr** | | Address (e.g. `http://localhost:9696`) and the API key from *Prowlarr → Settings → General* |
+| **Usenet** | **SABnzbd** | Address (e.g. `http://localhost:8080`) and the API key from *Config → General* |
+| | **NZBGet** | Address (e.g. `http://localhost:6789`) plus its ControlUsername / ControlPassword from *Settings → Security* |
+| **Torrents** | **Real-Debrid** | API key from [real-debrid.com/apitoken](https://real-debrid.com/apitoken). Nothing is shared from your machine |
+| | **qBittorrent** | Web UI address, username and password. Torrents get an `audiobooks` category |
+| | **Transmission** | Address (e.g. `http://localhost:9091`), plus a username and password if you set one |
+
+Press **Test** next to each one. Once Prowlarr is connected, a **Prowlarr** tab (and an **Audible catalog** tab) appears on Discover. Each Prowlarr result shows its indexer, size, format, and whether it's Usenet or a torrent. Open one and Narratarr matches the release name to the real book, so it's filed under the right author and title, with cover art.
+
+**What happens after you press Download:**
+
+- **Usenet:** the NZB goes to SABnzbd or NZBGet. When it has downloaded, repaired and unpacked the release, Narratarr moves the files into your library and clears the job from the client's history.
+- **qBittorrent / Transmission:** when the torrent finishes, Narratarr **hard-links** the files into your library (copying only if they're on different drives). The torrent keeps seeding, which matters on private trackers.
+- **Stop or Remove** in Narratarr also removes an unfinished download from the client.
 
 Narratarr searches category `3030` (*Audio › Audiobook*) by default; you can add more under **Settings → Prowlarr**. To go easy on indexer API limits, each search is sent once as typed, and a second, spelling-corrected search is only made when the first finds little.
 
 > [!TIP]
-> **Running both in Docker?** Narratarr needs to see SABnzbd's finished downloads. Mount the same host folder into both containers, ideally at the same path:
+> **Running it all in Docker?** Narratarr needs to see your clients' finished downloads. Mount the same host folder into every container, ideally at the same path:
 >
 > ```yaml
 > services:
 >   narratarr:
 >     volumes:
->       - /data/usenet:/data/usenet   # same path as in SABnzbd
->   sabnzbd:
+>       - /data/downloads:/data/downloads   # same path as in your download clients
+>   sabnzbd:            # or nzbget / qbittorrent / transmission
 >     volumes:
->       - /data/usenet:/data/usenet
+>       - /data/downloads:/data/downloads
 > ```
 >
-> If the paths have to differ (say SABnzbd uses `/downloads` and Narratarr uses `/data/usenet`), fill in **Path mapping** under Settings → SABnzbd. Use your containers' names as the addresses, e.g. `http://prowlarr:9696` and `http://sabnzbd:8080`.
+> If the paths have to differ (say the client uses `/downloads` and Narratarr uses `/data/downloads`), fill in **Settings → Download folders → Path mapping**. Use your containers' names as the addresses, e.g. `http://prowlarr:9696`.
+>
+> **qBittorrent in Docker:** keep `WEBUI_PORT` the same as the port you publish (e.g. `8080:8080`). qBittorrent refuses connections that arrive on a different port.
+
+### Wanted books and following authors
+
+Some books aren't out yet, or aren't on your indexers yet. Put them on your **Wanted** list and Narratarr keeps looking for you.
+
+- **Add any book:** the **Audible catalog** tab on Discover browses and searches Audible's whole store, including bestsellers, new releases, genres and books that haven't come out yet. Press **Add to Wanted**. Nothing is downloaded from Audible; it's only used for the book's details.
+- **Automatic search:** Narratarr checks your Prowlarr indexers, and LibriVox for public-domain titles, every 12 hours (adjustable). It only grabs a release when both the title *and* the author match, preferring free LibriVox recordings, M4B files and torrents with seeders. A few books are checked at a time to stay within your indexers' API limits, and books that aren't released yet wait until their release date.
+- **Pick a release yourself:** open a Wanted book and press **Pick a release** to see every match with a score, then **Grab** the one you want. The book keeps Audible's title, cover and description whichever release you pick.
+- **Follow authors and series:** on the **Authors** page, search for an author and press **Follow**, or press **Follow** on any book's author or series. Their new releases (and, if you like, everything already out) go straight to Wanted. Each author and series page shows their books, what's in your library, and an **Add all missing** button.
+
+### Importing books you already have
+
+**Library → Import books** scans any folder on the computer running Narratarr. Each folder of audio files becomes one book (`CD1`/`Disc 2` sub-folders stay together), named from the files' tags or from the folder names (`Author/Title` or `Author - Title`). Check the names, fix any, then choose:
+
+- **Copy in:** copies them into your library, organized as `Author/Title`, and leaves the originals alone.
+- **Move in:** the same, but moves them.
+- **Leave where they are:** adds them without touching the files. Use this for an existing Audiobookshelf or Plex library.
+
+Cover art embedded in the audio files is saved as `cover.jpg`. For hands-off imports, set an **import folder** under **Settings → Import**: anything dropped there is moved into your library automatically, once it has finished copying.
 
 <br>
 
 ## ⚙️ Configuration
 
-Most things live on the **Settings** page: library folder, folder template, how many downloads run at once, search options, Real-Debrid, Prowlarr, SABnzbd and Audiobookshelf. Secrets are stored in a `chmod 600` file and never sent back to the browser in full.
+Most things live on the **Settings** page: library folder, folder template, how many downloads run at once, search options, Prowlarr, download clients, automatic search, the import folder and Audiobookshelf. Secrets are stored in a `chmod 600` file and never sent back to the browser in full.
 
 A few things are set with environment variables instead:
 
@@ -304,7 +344,7 @@ Smart search sends what you type to Apple's public search API. You can turn it o
 <details>
 <summary><b>Do I need Real-Debrid?</b></summary>
 
-No. LibriVox and Old-Time Radio download directly and for free, and Usenet results from Prowlarr go through SABnzbd. Real-Debrid is only used for torrents, and Narratarr works fine without it.
+No. LibriVox and Old-Time Radio download directly and for free. Usenet results go through SABnzbd or NZBGet, and torrents can use your own qBittorrent or Transmission instead of Real-Debrid.
 </details>
 
 <details>
@@ -320,9 +360,15 @@ Books go to your library folder (`~/Audiobooks` by default). Settings and the li
 </details>
 
 <details>
-<summary><b>Does it work with Prowlarr and SABnzbd?</b></summary>
+<summary><b>Which download clients does it work with?</b></summary>
 
-Yes. See [Prowlarr and SABnzbd](#prowlarr-and-sabnzbd). Torrent results from Prowlarr download through Real-Debrid; a qBittorrent / Transmission option is a welcome contribution.
+Prowlarr for searching; SABnzbd and NZBGet for Usenet; Real-Debrid, qBittorrent and Transmission for torrents. See [Your \*arr stack](#your-arr-stack-prowlarr-and-download-clients). Deluge support would be a welcome contribution.
+</details>
+
+<details>
+<summary><b>How is this different from Chaptarr or Listenarr?</b></summary>
+
+They're great at classic \*arr automation. Narratarr does that too (Prowlarr, download clients, a Wanted list, following authors), but it's built around **listening**: a built-in player with chapters, speed, sleep timer and resume on any device, about 30,000 free LibriVox and Old-Time Radio books one click away, typo-tolerant browsing, and a one-command installer. It's happy to share a library folder with them.
 </details>
 
 <details>
@@ -350,17 +396,22 @@ narratarr/
     archive.py        LibriVox + Old-Time Radio (Internet Archive)
     audiobookbay.py   optional torrent source
     prowlarr.py       searches your Prowlarr indexers (Usenet + torrents)
+    audible.py        Audible's catalog as a Discover tab (adds to Wanted)
+  wanted.py         Wanted books: release matching, automatic search, following
+  audible.py        Audible catalog + Audnexus client (book, author and series details)
+  importer.py       finds and brings in books already on disk
+  downloaders.py    common shape for download clients
+  sabnzbd.py, nzbget.py, qbittorrent.py, transmission.py
   search.py         typo correction + ranking
   media.py          audio files + chapters (Nero and QuickTime) for the player
   realdebrid.py     Real-Debrid client
-  sabnzbd.py        SABnzbd client
   db.py, config.py  SQLite library + settings
   static/           the web UI: vanilla JS modules and CSS, no build step
 install.sh          the guided installer
 Dockerfile          two-stage image built with uv
 ```
 
-**Adding a source:** implement the small `Source` protocol in [`narratarr/sources/base.py`](narratarr/sources/base.py) (`latest`, `search`, `details`, `categories`, `owns`), set `delivery` to `"direct"` (plain HTTPS files), `"torrent"` (info hash via Real-Debrid) or `"indexer"` (each release says whether it's Usenet or a torrent), and register it in `sources/__init__.py`. The UI, library, queue and player pick it up automatically.
+**Adding a source:** implement the small `Source` protocol in [`narratarr/sources/base.py`](narratarr/sources/base.py) (`latest`, `search`, `details`, `categories`, `owns`), set `delivery` to `"direct"` (plain HTTPS files), `"torrent"` (sent to the torrent client), `"indexer"` (each release says whether it's Usenet or a torrent) or `"wanted"` (a catalog: books go to Wanted), and register it in `sources/__init__.py`. The UI, library, queue and player pick it up automatically.
 
 Issues and pull requests are welcome, especially new **legal** sources, translations and accessibility fixes.
 

@@ -52,6 +52,9 @@ class Details(Listing):
     trackers: list[str] = field(default_factory=list)
     files: list[dict] = field(default_factory=list)  # direct downloads: {url, name, size}
     download_url: str = ""  # Prowlarr: where to fetch the .nzb / .torrent (without the API key)
+    asin: str = ""  # Audible catalog books
+    series: list[dict] = field(default_factory=list)  # [{asin, title, sequence}]
+    released: str = ""
 
     def magnet(self) -> str:
         if not self.info_hash:

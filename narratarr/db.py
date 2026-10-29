@@ -59,9 +59,32 @@ MIGRATIONS = {
     "sab_nzo_id": "TEXT NOT NULL DEFAULT ''",
     "indexer": "TEXT NOT NULL DEFAULT ''",
     "release": "TEXT NOT NULL DEFAULT ''",
+    "download_client": "TEXT NOT NULL DEFAULT ''",  # which client holds the job: sabnzbd, nzbget, qbittorrent…
+    "client_job_id": "TEXT NOT NULL DEFAULT ''",  # that client's id for it (an nzo_id, NZBID or info hash)
+    "release_url": "TEXT NOT NULL DEFAULT ''",  # the search result a Wanted book was grabbed from
+    "import_mode": "TEXT NOT NULL DEFAULT ''",  # local imports: "copy" or "move"
+    "asin": "TEXT NOT NULL DEFAULT ''",
+    "series": "TEXT NOT NULL DEFAULT '[]'",  # [{asin, title, sequence}]
+    "released": "TEXT NOT NULL DEFAULT ''",
+    "last_searched": "REAL",
+    "search_note": "TEXT NOT NULL DEFAULT ''",
 }
 
-JSON_COLUMNS = ("narrators", "categories", "trackers", "files")
+JSON_COLUMNS = ("narrators", "categories", "trackers", "files", "series")
+
+FOLLOWS = """
+CREATE TABLE IF NOT EXISTS follows (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL,              -- "author" or "series"
+    asin       TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    image      TEXT NOT NULL DEFAULT '',
+    known      TEXT NOT NULL DEFAULT '[]', -- book ASINs already seen, so only new releases get added
+    added_at   REAL NOT NULL,
+    checked_at REAL,
+    UNIQUE (kind, asin)
+);
+"""
 
 
 def db_path() -> Path:
@@ -82,11 +105,16 @@ def connect():
 
 def init() -> None:
     with connect() as conn:
-        conn.executescript(SCHEMA)
+        conn.executescript(SCHEMA + FOLLOWS)
         existing = {r["name"] for r in conn.execute("PRAGMA table_info(books)")}
         for col, ddl in MIGRATIONS.items():
             if col not in existing:
                 conn.execute(f"ALTER TABLE books ADD COLUMN {col} {ddl}")
+        # 0.2.0 kept SABnzbd's job id in its own column.
+        conn.execute(
+            "UPDATE books SET download_client='sabnzbd', client_job_id=sab_nzo_id "
+            "WHERE sab_nzo_id != '' AND client_job_id = ''"
+        )
         # Anything mid-flight when the app last stopped goes back in the queue.
         conn.execute(
             f"UPDATE books SET status='queued', speed=0 WHERE status IN ({','.join('?' * len(ACTIVE))})",
@@ -118,6 +146,11 @@ def get(book_id: int) -> dict | None:
 def get_by_url(url: str) -> dict | None:
     with connect() as conn:
         return _row(conn.execute("SELECT * FROM books WHERE source_url=?", (url,)).fetchone())
+
+
+def get_by_path(path: str) -> dict | None:
+    with connect() as conn:
+        return _row(conn.execute("SELECT * FROM books WHERE path=?", (path,)).fetchone())
 
 
 def insert(book: dict) -> dict:
@@ -171,3 +204,51 @@ def stats() -> dict:
         "wanted": counts["wanted"],
         "failed": counts["failed"],
     }
+
+
+# ---- follows ----------------------------------------------------------------
+
+
+def _follow(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+    d = dict(row)
+    d["known"] = json.loads(d["known"] or "[]")
+    return d
+
+
+def list_follows() -> list[dict]:
+    with connect() as conn:
+        return [_follow(r) for r in conn.execute("SELECT * FROM follows ORDER BY name COLLATE NOCASE").fetchall()]
+
+
+def get_follow(follow_id: int) -> dict | None:
+    with connect() as conn:
+        return _follow(conn.execute("SELECT * FROM follows WHERE id=?", (follow_id,)).fetchone())
+
+
+def add_follow(kind: str, asin: str, name: str, image: str, known: list[str]) -> dict:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO follows (kind, asin, name, image, known, added_at, checked_at) VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT(kind, asin) DO UPDATE SET name=excluded.name, image=excluded.image",
+            (kind, asin, name, image, json.dumps(known), time.time(), time.time()),
+        )
+        follow_id = cur.lastrowid or conn.execute(
+            "SELECT id FROM follows WHERE kind=? AND asin=?", (kind, asin)
+        ).fetchone()["id"]
+    return get_follow(follow_id)
+
+
+def update_follow(follow_id: int, **changes) -> None:
+    if "known" in changes:
+        changes["known"] = json.dumps(changes["known"])
+    sets = ", ".join(f"{k}=?" for k in changes)
+    with connect() as conn:
+        conn.execute(f"UPDATE follows SET {sets} WHERE id=?", (*changes.values(), follow_id))
+
+
+def delete_follow(follow_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM follows WHERE id=?", (follow_id,))
+

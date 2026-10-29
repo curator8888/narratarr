@@ -7,12 +7,32 @@ from __future__ import annotations
 
 import httpx
 
+from .downloaders import ClientError, Job
 
-class SABnzbdError(Exception):
+
+class SABnzbdError(ClientError):
     pass
 
 
+QUEUE_LABELS = {
+    "Queued": "Queued in SABnzbd",
+    "Grabbing": "SABnzbd is reading the NZB…",
+    "Fetching": "SABnzbd is reading the NZB…",
+    "Propagating": "Waiting for the post to reach your Usenet server…",
+}
+HISTORY_LABELS = {
+    "QuickCheck": "SABnzbd is checking the files…",
+    "Verifying": "SABnzbd is checking the files…",
+    "Repairing": "SABnzbd is repairing the files…",
+    "Extracting": "SABnzbd is unpacking…",
+    "Moving": "SABnzbd is moving the files…",
+    "Running": "SABnzbd is running its post-processing script…",
+}
+
+
 class SABnzbd:
+    label = "SABnzbd"
+
     def __init__(self, url: str, api_key: str, transport: httpx.AsyncBaseTransport | None = None):
         if not (url and api_key):
             raise SABnzbdError("Add your SABnzbd address and API key in Settings first.")
@@ -66,16 +86,33 @@ class SABnzbd:
             raise SABnzbdError("SABnzbd didn't accept the NZB.")
         return ids[0]
 
-    async def job(self, nzo_id: str) -> dict | None:
-        """Where a job is: {"stage": "queue"|"history", ...the SABnzbd slot}, or None if SABnzbd forgot it."""
+    async def job(self, nzo_id: str) -> Job | None:
+        """Where a job is, or None if SABnzbd has forgotten it."""
         queue = (await self._call("queue", nzo_ids=nzo_id)).get("queue", {})
         for slot in queue.get("slots", []):
-            if slot.get("nzo_id") == nzo_id:
-                return {**slot, "stage": "queue", "kbpersec": queue.get("kbpersec", "0"), "paused": queue.get("paused")}
+            if slot.get("nzo_id") != nzo_id:
+                continue
+            status = slot.get("status", "")
+            progress = float(slot.get("percentage") or 0)
+            if queue.get("paused") or status == "Paused":
+                return Job("paused", progress, detail="SABnzbd is paused")
+            if status == "Downloading":
+                speed = int(float(queue.get("kbpersec") or 0) * 1024)
+                left = slot.get("timeleft") or ""
+                detail = f"Downloading in SABnzbd · {left} left" if speed and left else "Downloading in SABnzbd"
+                return Job("downloading", progress, speed, detail)
+            return Job("queued", progress, detail=QUEUE_LABELS.get(status, "Queued in SABnzbd"))
         history = (await self._call("history", nzo_ids=nzo_id)).get("history", {})
         for slot in history.get("slots", []):
-            if slot.get("nzo_id") == nzo_id:
-                return {**slot, "stage": "history"}
+            if slot.get("nzo_id") != nzo_id:
+                continue
+            status = slot.get("status", "")
+            if status == "Completed":
+                return Job("completed", 100, path=slot.get("storage") or "")
+            if status == "Failed":
+                reason = slot.get("fail_message") or "no reason given"
+                return Job("failed", error=f"SABnzbd couldn't finish this download: {reason}")
+            return Job("processing", 100, detail=HISTORY_LABELS.get(status, "SABnzbd is finishing up…"))
         return None
 
     async def forget(self, nzo_id: str) -> None:

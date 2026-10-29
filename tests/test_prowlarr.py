@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from narratarr import api, config, db, search, worker
 from narratarr.sources import prowlarr
 from narratarr.sources.prowlarr import Prowlarr, ProwlarrError, strip_key, tidy_title, to_details, with_key
-from narratarr.worker import Worker, sab_path
+from narratarr.worker import Worker, mapped_path
 
 PROWLARR = "http://prowlarr:9696"
 SAB = "http://sabnzbd:8080"
@@ -193,12 +193,12 @@ async def test_usenet_pipeline(isolated_data):
     assert fake.added["cat"] == ["audiobooks"] and fake.added["name"] == ["Frank Herbert - Dune"]
     assert NZB in fake.added["body"]
     assert fake.prowlarr_keys == ["PKEY"]
-    assert fake.forgotten and done["sab_nzo_id"] == ""
+    assert fake.forgotten and done["client_job_id"] == ""
     assert not (isolated_data / "sab" / "complete" / "Frank Herbert - Dune").exists()
 
 
 async def test_usenet_path_mapping(isolated_data):
-    config.update({"sabnzbd_remote_path": "/downloads", "sabnzbd_local_path": str(isolated_data / "sab")})
+    config.update({"path_remote": "/downloads", "path_local": str(isolated_data / "sab")})
     fake = FakeServers(isolated_data / "sab" / "complete", report_path="/downloads/complete/Frank Herbert - Dune")
     book = add_release(USENET)
 
@@ -238,13 +238,13 @@ async def test_prowlarr_torrent_file_goes_to_real_debrid(isolated_data):
     assert "dead" in db.get(book["id"])["error"]  # our fake Real-Debrid gives up; the hand-off is what matters
 
 
-def test_sab_path_mapping():
+def test_mapped_path_mapping():
     s = config.load()
-    s.sabnzbd_remote_path, s.sabnzbd_local_path = "/downloads/", "/mnt/usenet"
-    assert sab_path("/downloads/complete/Dune", s) == Path("/mnt/usenet/complete/Dune")
-    assert sab_path("/downloads-other/Dune", s) == Path("/downloads-other/Dune")
-    s.sabnzbd_remote_path, s.sabnzbd_local_path = "D:\\Usenet", "/mnt/usenet"
-    assert sab_path("D:\\Usenet\\complete\\Dune", s) == Path("/mnt/usenet/complete/Dune")
+    s.path_remote, s.path_local = "/downloads/", "/mnt/usenet"
+    assert mapped_path("/downloads/complete/Dune", s) == Path("/mnt/usenet/complete/Dune")
+    assert mapped_path("/downloads-other/Dune", s) == Path("/downloads-other/Dune")
+    s.path_remote, s.path_local = "D:\\Usenet", "/mnt/usenet"
+    assert mapped_path("D:\\Usenet\\complete\\Dune", s) == Path("/mnt/usenet/complete/Dune")
 
 
 def test_prowlarr_tab_appears_once_configured():

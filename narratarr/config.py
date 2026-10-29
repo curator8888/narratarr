@@ -37,9 +37,28 @@ class Settings:
     sabnzbd_url: str = ""
     sabnzbd_api_key: str = ""
     sabnzbd_category: str = ""
-    # When SABnzbd sees its downloads under a different path (e.g. another container).
-    sabnzbd_remote_path: str = ""
-    sabnzbd_local_path: str = ""
+    usenet_client: str = "sabnzbd"  # or "nzbget"
+    nzbget_url: str = ""
+    nzbget_username: str = ""
+    nzbget_password: str = ""
+    nzbget_category: str = ""
+    torrent_client: str = "realdebrid"  # or "qbittorrent" / "transmission"
+    qbittorrent_url: str = ""
+    qbittorrent_username: str = ""
+    qbittorrent_password: str = ""
+    qbittorrent_category: str = "audiobooks"
+    transmission_url: str = ""
+    transmission_username: str = ""
+    transmission_password: str = ""
+    # When a download client sees its downloads under a different path (e.g. another container).
+    path_remote: str = ""
+    path_local: str = ""
+    # Books dropped in here are moved into the library automatically.
+    import_folder: str = ""
+    # Look for Wanted books on Prowlarr (and LibriVox) every few hours.
+    auto_search: bool = True
+    auto_search_hours: int = 12
+    audible_region: str = "us"
 
     def public(self) -> dict:
         """Settings safe to send to the browser (secrets masked)."""
@@ -50,10 +69,26 @@ class Settings:
         d["brave_configured"] = bool(self.brave_api_key)
         d["prowlarr_configured"] = bool(self.prowlarr_url and self.prowlarr_api_key)
         d["sabnzbd_configured"] = bool(self.sabnzbd_url and self.sabnzbd_api_key)
+        d["nzbget_configured"] = bool(self.nzbget_url)
+        d["qbittorrent_configured"] = bool(self.qbittorrent_url)
+        d["transmission_configured"] = bool(self.transmission_url)
+        d["usenet_configured"] = d[f"{self.usenet_client}_configured"]
+        d["torrent_configured"] = d["rd_configured" if self.torrent_client == "realdebrid" else f"{self.torrent_client}_configured"]
         return d
 
 
-SECRETS = ("rd_api_key", "audiobookshelf_token", "brave_api_key", "prowlarr_api_key", "sabnzbd_api_key")
+SECRETS = (
+    "rd_api_key", "audiobookshelf_token", "brave_api_key", "prowlarr_api_key", "sabnzbd_api_key",
+    "nzbget_password", "qbittorrent_password", "transmission_password",
+)
+CHOICES = {
+    "search_provider": ("audiobookbay", "brave"),
+    "usenet_client": ("sabnzbd", "nzbget"),
+    "torrent_client": ("realdebrid", "qbittorrent", "transmission"),
+    "audible_region": ("us", "uk", "ca", "au", "in", "de", "fr", "it", "es", "jp"),
+}
+# Settings that were renamed; old settings files are read with the new names.
+RENAMED = {"sabnzbd_remote_path": "path_remote", "sabnzbd_local_path": "path_local"}
 
 
 def _mask(secret: str) -> str:
@@ -73,6 +108,9 @@ def load() -> Settings:
             _settings = Settings()
             if SETTINGS_FILE.exists():
                 raw = json.loads(SETTINGS_FILE.read_text())
+                for old, new in RENAMED.items():
+                    if old in raw and new not in raw:
+                        raw[new] = raw[old]
                 known = {f.name for f in fields(Settings)}
                 for k, v in raw.items():
                     if k in known:
@@ -92,9 +130,11 @@ def update(changes: dict) -> Settings:
                 continue
             if k == "max_concurrent":
                 v = max(1, min(int(v), 8))
-            elif k == "search_provider":
-                v = v if v in ("audiobookbay", "brave") else "audiobookbay"
-            elif k in ("abb_base_url", "prowlarr_url", "sabnzbd_url"):
+            elif k == "auto_search_hours":
+                v = max(1, min(int(v), 168))
+            elif k in CHOICES:
+                v = v if v in CHOICES[k] else known[k].default
+            elif k.endswith("_url") and isinstance(v, str):
                 v = str(v).strip().rstrip("/")
             elif isinstance(v, str):
                 v = v.strip()

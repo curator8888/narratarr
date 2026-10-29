@@ -17,9 +17,9 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import brave, config, db, media, search
+from . import audible, brave, config, db, downloaders, importer, media, search, wanted
+from .downloaders import ClientError
 from .realdebrid import RealDebrid, RealDebridError
-from .sabnzbd import SABnzbd, SABnzbdError
 from .sources import ORDER, Prowlarr, ProwlarrError, all_sources, get_source, source_for_url
 from .worker import Worker
 
@@ -119,7 +119,7 @@ async def sources():
             "categories": [{"slug": c.slug, "name": c.name} for c in found[name].categories()],
         }
         for name in ORDER
-        if name != "prowlarr" or settings["prowlarr_configured"]
+        if name not in ("prowlarr", "audible") or settings["prowlarr_configured"]
     ]
 
 
@@ -138,17 +138,20 @@ async def discover(q: str = "", category: str = "", page: int = 1, source: str =
             )
         elif q.strip() and src.name == "prowlarr":
             data = await search.careful_search(src, q.strip(), settings.smart_search)
+        elif q.strip() and src.name == "audible":
+            data = {**(await src.search(q.strip(), page)).to_dict(), "did_you_mean": ""}
         elif q.strip():
             data = await search.smart_search(src, q.strip(), page, use_suggestions=settings.smart_search)
         else:
             data = (await src.latest(page, category or None)).to_dict()
-    except ProwlarrError as e:
+    except (ProwlarrError, audible.AudibleError) as e:
         raise HTTPException(502, str(e))
     except httpx.HTTPError as e:
         raise _source_error(e, src.label)
     except brave.BraveError as e:
         raise HTTPException(502, str(e))
-    owned = {b["source_url"]: b for b in db.list_books()}
+    books = db.list_books()
+    owned = {b["release_url"]: b for b in books if b["release_url"]} | {b["source_url"]: b for b in books}
     for item in data["items"]:
         b = owned.get(item["url"])
         item["source"] = src.name
@@ -170,6 +173,8 @@ async def details(url: str, source: str | None = None):
         d = await src.details(url)
     except ProwlarrError as e:
         raise HTTPException(410, str(e))
+    except audible.AudibleError as e:
+        raise HTTPException(502, str(e))
     except httpx.HTTPError as e:
         raise _source_error(e, src.label)
     data = d.to_dict()
@@ -201,6 +206,8 @@ async def stats():
 @app.post("/api/library")
 async def add_book(body: AddBook):
     source = _resolve(body.url, body.source)
+    if source.name == "audible":
+        return await _add_wanted(body.url, body.download)
     existing = db.get_by_url(body.url)
     if existing:
         if body.download and existing["status"] in ("wanted", "failed"):
@@ -243,6 +250,29 @@ async def add_book(body: AddBook):
     return book
 
 
+async def _add_wanted(url: str, search_now: bool) -> dict:
+    """An Audible book goes to Wanted; Narratarr then looks for a release for it."""
+    asin = audible.asin_from_url(url)
+    try:
+        b = await audible.book(asin)
+    except audible.AudibleError as e:
+        raise HTTPException(502, str(e))
+    if not b:
+        raise HTTPException(404, "Audible doesn't have that book any more.")
+    book = wanted.add_wanted(b) or wanted.in_library(asin, b["title"], b["author"]) or db.get_by_url(b["url"])
+    if search_now and book["status"] == "wanted" and book["source"] == "audible":
+        asyncio.create_task(_search_in_background(book["id"]))
+    return book
+
+
+async def _search_in_background(book_id: int) -> None:
+    try:
+        if await wanted.search_and_grab(db.get(book_id)):
+            _worker().poke()
+    except Exception as e:
+        db.update(book_id, search_note=str(e) or "The search failed.")
+
+
 def _get_or_404(book_id: int) -> dict:
     book = db.get(book_id)
     if not book:
@@ -255,30 +285,44 @@ async def download(book_id: int):
     book = _get_or_404(book_id)
     if book["status"] in db.ACTIVE:
         return book
-    changes = {"sab_nzo_id": ""} if book["status"] == "failed" else {}  # a failed Usenet job starts over
+    if book["source"] == "audible":  # no release picked yet: look for one now
+        try:
+            pick = await wanted.search_and_grab(book)
+        except ProwlarrError as e:
+            raise HTTPException(502, str(e))
+        if not pick:
+            raise HTTPException(404, f"{db.get(book_id)['search_note']} Narratarr will keep looking.")
+        _worker().poke()
+        return db.get(book_id)
+    changes = {"client_job_id": ""} if book["status"] == "failed" else {}  # a failed client job starts over
     db.update(book_id, status="queued", error="", progress=0, detail="", **changes)
     _worker().poke()
     return db.get(book_id)
 
 
-async def _drop_from_sabnzbd(book: dict) -> None:
-    """Stopping a Usenet download in Narratarr stops it in SABnzbd too."""
-    if not book["sab_nzo_id"] or book["status"] not in db.ACTIVE:
+async def _drop_from_client(book: dict) -> None:
+    """Stopping a download in Narratarr stops it in SABnzbd, NZBGet, qBittorrent or Transmission too."""
+    if not book["client_job_id"] or book["status"] not in db.ACTIVE:
         return
     s = config.load()
+    name = book["download_client"]
     try:
-        async with SABnzbd(s.sabnzbd_url, s.sabnzbd_api_key) as sab:
-            await sab.delete(book["sab_nzo_id"])
-    except SABnzbdError:
+        if name in downloaders.USENET_CLIENTS:
+            async with downloaders.usenet_client(s, name=name) as client:
+                await client.delete(book["client_job_id"])
+        elif name in ("qbittorrent", "transmission"):
+            async with downloaders.torrent_client(s, name=name) as client:
+                await client.delete(book["client_job_id"], files=True)
+    except ClientError:
         pass
-    db.update(book["id"], sab_nzo_id="")
+    db.update(book["id"], client_job_id="")
 
 
 @app.post("/api/library/{book_id}/stop")
 async def stop(book_id: int):
     book = _get_or_404(book_id)
     _worker().cancel(book_id)
-    await _drop_from_sabnzbd(book)
+    await _drop_from_client(book)
     db.update(book_id, status="wanted", speed=0, progress=0, detail="")
     return db.get(book_id)
 
@@ -287,7 +331,7 @@ async def stop(book_id: int):
 async def remove(book_id: int, delete_files: bool = False):
     book = _get_or_404(book_id)
     _worker().cancel(book_id)
-    await _drop_from_sabnzbd(book)
+    await _drop_from_client(book)
     if delete_files and book["path"]:
         root = Path(config.load().library_dir).expanduser().resolve()
         path = Path(book["path"]).resolve()
@@ -330,9 +374,12 @@ async def stream(book_id: int, index: int):
 @app.get("/api/library/{book_id}/cover")
 async def cover(book_id: int):
     book = _get_or_404(book_id)
-    if book["path"]:
+    if book["path"] and Path(book["path"]).is_dir():
         for found in sorted(Path(book["path"]).glob("cover.*")):
             return FileResponse(found)
+        art = await asyncio.to_thread(importer.embedded_cover, Path(book["path"]))
+        if art:
+            return Response(art[0], media_type=art[1], headers={"Cache-Control": "max-age=86400"})
     if book["cover_url"].startswith(("http://", "https://")):
         return RedirectResponse(book["cover_url"])
     raise HTTPException(404, "No cover")
@@ -355,6 +402,206 @@ async def save_progress(book_id: int, body: Progress):
         if body.finished:
             changes["listen_position"] = 0.0
     db.update(book_id, **changes)
+    return {"ok": True}
+
+
+# ---- wanted: releases ---------------------------------------------------------
+
+
+@app.get("/api/library/{book_id}/releases")
+async def releases(book_id: int):
+    book = _get_or_404(book_id)
+    try:
+        found = await wanted.find_releases(book)
+    except ProwlarrError as e:
+        raise HTTPException(502, str(e))
+    db.update(book_id, last_searched=time.time())
+    return {"items": found[:60], "auto_match": wanted.AUTO_MATCH}
+
+
+class Grab(BaseModel):
+    url: str
+    source: str
+
+
+@app.post("/api/library/{book_id}/grab")
+async def grab(book_id: int, body: Grab):
+    book = _get_or_404(book_id)
+    if book["status"] in db.ACTIVE:
+        raise HTTPException(409, "This book is already downloading.")
+    _resolve(body.url, body.source)
+    try:
+        book = await wanted.grab(book_id, body.url, body.source)
+    except ProwlarrError as e:
+        raise HTTPException(410, str(e))
+    except httpx.HTTPError as e:
+        raise _source_error(e, body.source)
+    _worker().poke()
+    return book
+
+
+# ---- import ---------------------------------------------------------------------
+
+
+class ScanFolder(BaseModel):
+    folder: str
+
+
+def _folder(path: str) -> Path:
+    folder = Path(path.strip()).expanduser()
+    if not path.strip() or not folder.is_dir():
+        raise HTTPException(400, f"Narratarr can't find a folder at {path or 'that path'}.")
+    return folder.resolve()
+
+
+@app.post("/api/import/scan")
+async def import_scan(body: ScanFolder):
+    folder = _folder(body.folder)
+    found = await asyncio.to_thread(importer.scan, folder)
+    books = db.list_books()
+    known_paths = {b["path"] for b in books if b["path"]} | {importer.path_of(b["source_url"]).as_posix()
+                                                               for b in books if b["source"] == "local"}
+    library = Path(config.load().library_dir).expanduser().resolve()
+    for f in found:
+        f["in_library"] = f["path"] in known_paths or bool(wanted.in_library("", f["title"], f["author"], books)
+                                                           and f["title"] and f["author"])
+        f["inside_library"] = library == Path(f["path"]) or library in Path(f["path"]).parents
+    return {"folder": str(folder), "books": found}
+
+
+class ImportItem(BaseModel):
+    path: str
+    title: str = ""
+    author: str = ""
+
+
+class ImportBooks(BaseModel):
+    folder: str
+    mode: str = "copy"  # "copy", "move" or "inplace"
+    books: list[ImportItem]
+
+
+@app.post("/api/import")
+async def import_books(body: ImportBooks):
+    folder = _folder(body.folder)
+    if body.mode not in ("copy", "move", "inplace"):
+        raise HTTPException(400, "Unknown import mode.")
+    found = {f["path"]: f for f in await asyncio.to_thread(importer.scan, folder)}
+    added = []
+    for item in body.books:
+        f = found.get(item.path)
+        if not f:
+            continue  # only books that are really in that folder
+        f = {**f, "title": item.title.strip() or f["title"], "author": item.author.strip() or f["author"]}
+        mode = "copy" if body.mode == "inplace" and f["single_file"] else body.mode
+        if db.get_by_url(importer.url_for(Path(f["path"]))) or db.get_by_path(f["path"]):
+            continue
+        added.append(db.insert(importer.as_book(f, mode, "completed" if mode == "inplace" else "queued")))
+    if any(b["status"] == "queued" for b in added):
+        _worker().poke()
+    return {"added": len(added)}
+
+
+@app.post("/api/import/check-folder")
+async def import_check_folder():
+    """Check the watched import folder right away instead of waiting a minute."""
+    return {"queued": await _worker().watch_folder()}
+
+
+# ---- authors and series ----------------------------------------------------------
+
+
+@app.get("/api/authors/search")
+async def author_search(q: str):
+    if len(q.strip()) < 2:
+        return []
+    try:
+        return await audible.search_authors(q.strip())
+    except audible.AudibleError as e:
+        raise HTTPException(502, str(e))
+
+
+@app.get("/api/follows")
+async def follows():
+    books = db.list_books()
+    return [{**f, "known": len(f["known"]), **wanted.follow_counts(f, books)} for f in db.list_follows()]
+
+
+class Follow(BaseModel):
+    kind: str
+    asin: str
+    name: str = ""
+    add_existing: bool = False
+
+
+@app.post("/api/follows")
+async def add_follow(body: Follow):
+    if body.kind not in ("author", "series"):
+        raise HTTPException(400, "You can follow an author or a series.")
+    try:
+        f, added = await wanted.follow(body.kind, body.asin, body.name, body.add_existing)
+    except audible.AudibleError as e:
+        raise HTTPException(502, str(e))
+    if added:
+        asyncio.create_task(_auto_search_now())
+    return {**f, "known": len(f["known"]), "added": added}
+
+
+async def _auto_search_now() -> None:
+    try:
+        if await wanted.auto_search():
+            _worker().poke()
+    except Exception:
+        pass
+
+
+def _follow_or_404(follow_id: int) -> dict:
+    f = db.get_follow(follow_id)
+    if not f:
+        raise HTTPException(404, "You're not following that any more.")
+    return f
+
+
+@app.get("/api/follows/{follow_id}")
+async def follow_detail(follow_id: int):
+    f = _follow_or_404(follow_id)
+    try:
+        if f["kind"] == "author":
+            info = await audible.author(f["asin"])
+            found = await audible.author_books(f["asin"], f["name"])
+        else:
+            info = {"description": ""}
+            _, found = await audible.series_books(f["asin"])
+    except audible.AudibleError as e:
+        raise HTTPException(502, str(e))
+    books = db.list_books()
+    for b in found:
+        lib = wanted.in_library(b["asin"], b["title"], b["author"], books)
+        b["library"] = {"id": lib["id"], "status": lib["status"]} if lib else None
+    return {**f, "known": len(f["known"]), "description": info.get("description", ""), "books": found,
+            **wanted.follow_counts(f, books)}
+
+
+@app.post("/api/follows/{follow_id}/want-all")
+async def want_all(follow_id: int):
+    f = _follow_or_404(follow_id)
+    detail = await follow_detail(follow_id)
+    added = sum(1 for b in detail["books"] if not b["library"] and wanted.add_wanted(b))
+    if added:
+        asyncio.create_task(_auto_search_now())
+    return {"added": added, "name": f["name"]}
+
+
+@app.delete("/api/follows/{follow_id}")
+async def unfollow(follow_id: int, remove_wanted: bool = False):
+    f = _follow_or_404(follow_id)
+    if remove_wanted:
+        books = db.list_books()
+        mine = {b["id"] for b in books if b["status"] == "wanted" and b["source"] == "audible"}
+        for b in books:
+            if b["id"] in mine and wanted.follow_counts(f, [b])["wanted"]:
+                db.delete(b["id"])
+    db.delete_follow(follow_id)
     return {"ok": True}
 
 
@@ -397,6 +644,22 @@ async def test_sabnzbd():
         async with SABnzbd(s.sabnzbd_url, s.sabnzbd_api_key) as sab:
             return {"version": await sab.version()}
     except SABnzbdError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/settings/test-client/{name}")
+async def test_client(name: str):
+    s = config.load()
+    try:
+        if name in downloaders.USENET_CLIENTS:
+            factory = downloaders.usenet_client
+        elif name in ("qbittorrent", "transmission"):
+            factory = downloaders.torrent_client
+        else:
+            raise HTTPException(404, "Unknown download client.")
+        async with factory(s, name=name) as client:
+            return {"version": await client.version(), "label": client.label}
+    except ClientError as e:
         raise HTTPException(400, str(e))
 
 
