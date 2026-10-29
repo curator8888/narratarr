@@ -2,7 +2,7 @@
 
 All notable changes to Narratarr. The app shows this under **Settings → Updates**.
 
-## Unreleased
+## 0.4.1 — 2026-10-29
 
 - **Deluge** alongside qBittorrent and Transmission for torrents. Deluge's web UI has no username, only a password; torrents are labelled `narratarr-<book id>` when its Label plugin is enabled, so Narratarr only ever removes torrents it added.
 
