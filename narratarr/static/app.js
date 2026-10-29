@@ -21,7 +21,7 @@ const PHASES = [
   ["downloading", "Download"],
   ["organizing", "Organize"],
 ];
-const CLIENTS = { sabnzbd: "SABnzbd", nzbget: "NZBGet", realdebrid: "Real-Debrid", qbittorrent: "qBittorrent", transmission: "Transmission" };
+const CLIENTS = { sabnzbd: "SABnzbd", nzbget: "NZBGet", realdebrid: "Real-Debrid", qbittorrent: "qBittorrent", transmission: "Transmission", deluge: "Deluge" };
 
 
 // ---------------------------------------------------------------------------
@@ -318,8 +318,8 @@ function Discover(root) {
       <div class="banner">
         <div class="ico">${I.key}</div>
         <div><strong>Connect a download client to start downloading</strong><p>${src.delivery === "indexer"
-          ? "Usenet results go to SABnzbd or NZBGet, torrents to Real-Debrid, qBittorrent or Transmission. You can save books to Wanted until then."
-          : "Use Real-Debrid, qBittorrent or Transmission. You can browse and save books to Wanted until then."}</p></div>
+          ? "Usenet results go to SABnzbd or NZBGet, torrents to Real-Debrid, qBittorrent, Transmission or Deluge. You can save books to Wanted until then."
+          : "Use Real-Debrid, qBittorrent, Transmission or Deluge. You can browse and save books to Wanted until then."}</p></div>
         <a class="btn" href="#/settings">Open Settings</a>
       </div>` : ""}
     <div class="section-head"><h2 id="disc-title"></h2><div class="refine" id="refine"></div></div>
@@ -1325,7 +1325,7 @@ function Settings(root) {
       </section>
 
       <section class="panel">
-        <div><h3>Torrents</h3><p class="desc">How torrents download. Real-Debrid fetches them for you, so nothing is shared from your computer. qBittorrent and Transmission download on your own machine and keep seeding, which makes your IP address visible to other peers; many people run them behind a VPN.</p></div>
+        <div><h3>Torrents</h3><p class="desc">How torrents download. Real-Debrid fetches them for you, so nothing is shared from your computer. qBittorrent, Transmission and Deluge download on your own machine and keep seeding, which makes your IP address visible to other peers; many people run them behind a VPN.</p></div>
         <div class="body">
           <div class="field">
             <label>Download torrents with</label>
@@ -1333,6 +1333,7 @@ function Settings(root) {
               <button type="button" role="radio" data-v="realdebrid">Real-Debrid</button>
               <button type="button" role="radio" data-v="qbittorrent">qBittorrent</button>
               <button type="button" role="radio" data-v="transmission">Transmission</button>
+              <button type="button" role="radio" data-v="deluge">Deluge</button>
             </div>
             <input type="hidden" name="torrent_client" value="${esc(s.torrent_client)}" />
           </div>
@@ -1370,6 +1371,15 @@ function Settings(root) {
               <div class="field"><label for="transmission_password">Password</label><input class="input mono" id="transmission_password" name="transmission_password" type="password" value="${esc(s.transmission_password)}" /></div>
             </div>
             <div><button class="btn" type="button" data-test-client="transmission">Test connection</button><div data-result="transmission"></div></div>
+          </div>
+          <div class="client-fields" data-for="torrent_client:deluge">
+            <div class="field"><label for="deluge_url">Deluge Web UI address</label><input class="input mono" id="deluge_url" name="deluge_url" placeholder="http://localhost:8112" value="${esc(s.deluge_url)}" /></div>
+            <div class="field">
+              <label for="deluge_password">Password</label>
+              <input class="input mono" id="deluge_password" name="deluge_password" type="password" value="${esc(s.deluge_password)}" />
+              <span class="hint">Deluge's web password (it has no username). Set it under Preferences &rarr; Interface &rarr; Password.</span>
+            </div>
+            <div><button class="btn" type="button" data-test-client="deluge">Test connection</button><div data-result="deluge"></div></div>
           </div>
         </div>
       </section>
@@ -1584,7 +1594,7 @@ function Settings(root) {
     form.rd_api_key.value = state.settings.rd_api_key;
     form.audiobookshelf_token.value = state.settings.audiobookshelf_token;
     form.brave_api_key.value = state.settings.brave_api_key;
-    for (const key of ["prowlarr_api_key", "sabnzbd_api_key", "nzbget_password", "qbittorrent_password", "transmission_password"]) {
+    for (const key of ["prowlarr_api_key", "sabnzbd_api_key", "nzbget_password", "qbittorrent_password", "transmission_password", "deluge_password"]) {
       form[key].value = state.settings[key];
     }
     state.sources = await api("/api/sources"); // the Prowlarr tab appears once it's set up
