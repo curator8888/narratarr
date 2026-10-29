@@ -205,39 +205,70 @@ async def test_transmission_with_path_mapping(isolated_data):
 
 
 class FakeDeluge:
-    """Deluge's web API answers 200 with an error object, and reports hashes in upper case."""
+    """Deluge 2.x, faithful where it matters.
 
-    def __init__(self, folder: Path):
-        self.folder, self.polls, self.added, self.options, self.calls = folder, 0, None, None, []
+    It rejects methods it does not recognise with an error object, the way a real server does, and
+    labels only appear after `label.set_torrent` — `options["label"]` is accepted and silently
+    dropped, exactly as on a real daemon. Both of those were real bugs that a friendlier fake hid.
+    """
+
+    def __init__(self, folder: Path, plugins=("Label",)):
+        self.folder, self.plugins = folder, list(plugins)
+        self.added, self.options, self.removed = None, None, None
+        self.torrents: dict[str, dict] = {}
+        self.labels: set[str] = set()
+        self.calls: list[str] = []
+
+    @staticmethod
+    def _ok(result, body):
+        return httpx.Response(200, json={"result": result, "error": None, "id": body["id"]})
+
+    @staticmethod
+    def _fail(message, body, code=2):
+        return httpx.Response(200, json={"result": None, "error": {"message": message, "code": code}, "id": body["id"]})
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         method, params = body["method"], body["params"]
         self.calls.append(method)
         if method == "auth.login":
-            return httpx.Response(200, json={"result": params == ["pw"], "error": None, "id": body["id"]})
+            return self._ok(params == ["pw"], body)
         if method == "web.connected":
-            return httpx.Response(200, json={"result": True, "error": None, "id": body["id"]})
-        if method == "get_plugins":
-            return httpx.Response(200, json={"result": {"Label": {"enabled": True}}, "error": None, "id": body["id"]})
+            return self._ok(True, body)
+        if method == "core.get_enabled_plugins":
+            return self._ok(self.plugins, body)
         if method == "daemon.get_version":
-            return httpx.Response(200, json={"result": "2.1.1", "error": None, "id": body["id"]})
+            return self._ok("2.2.0", body)
         if method == "core.add_torrent_magnet":
             self.added, self.options = params[0], params[1]
-            return httpx.Response(200, json={"result": HASH.upper(), "error": None, "id": body["id"]})
+            self.torrents[HASH] = {"label": "", "polls": 0}
+            return self._ok(HASH.upper(), body)  # upper case, as the daemon does
+        if method == "label.add":
+            if params[0] in self.labels:
+                return self._fail("Label already exists", body, 4)
+            self.labels.add(params[0])
+            return self._ok(None, body)
+        if method == "label.set_torrent":
+            torrent = self.torrents.get(params[0])
+            if torrent is None:
+                return self._fail("Unknown torrent", body)
+            torrent["label"] = params[1]
+            return self._ok(None, body)
         if method == "core.get_torrent_status":
+            torrent = self.torrents.get(params[0])
+            if torrent is None:
+                return self._ok({}, body)
             if params[1] == ["label"]:
-                return httpx.Response(200, json={"result": {"label": self.options.get("label", "")}, "error": None, "id": body["id"]})
-            self.polls += 1
-            done = self.polls > 1
-            status = {"name": self.folder.name, "download_location": "/data/torrents",
-                      "state": "Seeding" if done else "Downloading", "progress": 100 if done else 30,
-                      "is_finished": done, "download_payload_rate": 500, "message": ""}
-            return httpx.Response(200, json={"result": status, "error": None, "id": body["id"]})
+                return self._ok({"label": torrent["label"]}, body)
+            torrent["polls"] += 1
+            done = torrent["polls"] > 1
+            return self._ok({"name": self.folder.name, "download_location": "/data/torrents",
+                             "state": "Seeding" if done else "Downloading", "progress": 100 if done else 30,
+                             "is_finished": done, "download_payload_rate": 500, "message": ""}, body)
         if method == "core.remove_torrent":
             self.removed = params
-            return httpx.Response(200, json={"result": True, "error": None, "id": body["id"]})
-        return httpx.Response(200, json={"result": None, "error": {"message": "Unknown method" + "", "code": 1}, "id": body["id"]})
+            return self._ok(self.torrents.pop(params[0], None) is not None, body)
+        return self._fail("Unknown method", body)
 
 
 async def test_deluge_with_path_mapping(isolated_data):
@@ -252,7 +283,8 @@ async def test_deluge_with_path_mapping(isolated_data):
     done = db.get(book["id"])
     assert done["status"] == "completed", done["error"]
     assert fake.added.startswith(f"magnet:?xt=urn:btih:{HASH}")
-    assert fake.options["label"] == f"narratarr-{book['id']}"  # our ownership tag, from the Label plugin
+    assert "label.set_torrent" in fake.calls  # labels are a plugin call, not an add option
+    assert fake.torrents[HASH]["label"] == f"narratarr-{book['id']}"
     assert done["client_job_id"] == HASH  # Deluge's upper-case hash normalised
     assert (original / "Dune.m4b").exists()
 
@@ -271,6 +303,36 @@ async def test_deluge_reports_an_rpc_error(isolated_data):
     with pytest.raises(DelugeError):
         async with Deluge("http://deluge:8112", "wrong", transport=httpx.MockTransport(handler)) as d:
             await d.version()
+
+
+async def test_deluge_removes_only_its_own_torrents(isolated_data):
+    """The label is the proof of ownership: ours is removable, the user's is not."""
+    from narratarr.deluge import Deluge
+
+    theirs = "b" * 40
+    fake = FakeDeluge(Path("/tmp"))
+    fake.torrents = {HASH: {"label": "narratarr-7", "polls": 0}, theirs: {"label": "", "polls": 0}}
+
+    async with Deluge("http://deluge:8112", "pw", transport=httpx.MockTransport(fake)) as d:
+        await d.delete(HASH, tag="narratarr-7")
+        assert HASH not in fake.torrents, "a torrent carrying our label should be removed"
+        assert fake.removed == [HASH, True], "its files go too, because the label is ours"
+        await d.delete(theirs, tag="narratarr-7")
+        assert theirs in fake.torrents, "a torrent without our label must be left alone"
+        assert fake.removed == [HASH, True], "and no remove call should have been made"
+
+
+async def test_deluge_without_the_label_plugin_still_adds(isolated_data):
+    """No Label plugin: no label calls, and delete() then refuses to remove anything."""
+    from narratarr.deluge import Deluge
+
+    fake = FakeDeluge(Path("/tmp"), plugins=())
+    async with Deluge("http://deluge:8112", "pw", transport=httpx.MockTransport(fake)) as d:
+        h = await d.add("magnet", f"magnet:?xt=urn:btih:{HASH}", tag="narratarr-9")
+        assert h == HASH
+        assert "label.add" not in fake.calls and "label.set_torrent" not in fake.calls
+        await d.delete(h, tag="narratarr-9")
+        assert HASH in fake.torrents, "with no label there is no proof of ownership, so nothing is removed"
 
 
 def test_link_into_single_file_and_folder(tmp_path):

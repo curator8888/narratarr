@@ -82,7 +82,10 @@ class Deluge:
         if not await self._call("web.connected"):
             await self._connect_daemon()
         self._ready = True
-        plugins = await self._call("get_plugins") or {}
+        # core.get_enabled_plugins returns the daemon's plugin list, and it is what governs whether
+        # the label option is honoured. The web method is `web.get_plugins` (a dict), and a bare
+        # `get_plugins` — which the reference docs list — is "Unknown method" on a real server.
+        plugins = await self._call("core.get_enabled_plugins") or []
         self._labels = any(str(p).lower() == "label" for p in plugins)
 
     async def _connect_daemon(self) -> None:
@@ -103,8 +106,6 @@ class Deluge:
     async def add(self, kind: str, payload: str | bytes, tag: str = "", category: str = "") -> str:
         await self._login()
         options: dict = {}
-        if tag and self._labels:  # only the Label plugin reads this key
-            options["label"] = tag
         if category:
             options["download_location"] = category
         if kind == "magnet":
@@ -114,7 +115,24 @@ class Deluge:
             found = await self._call("core.add_torrent_file", ["book.torrent", dump, options])
         if not found:
             raise DelugeError("Deluge didn't accept the torrent.")
-        return str(found).lower()  # Deluge reports hashes in upper case; ours are lower
+        torrent_hash = str(found).lower()  # Deluge reports hashes in upper case; ours are lower
+        if tag and self._labels:
+            await self._attach_label(torrent_hash, tag)
+        return torrent_hash
+
+    async def _attach_label(self, torrent_hash: str, tag: str) -> None:
+        """Label the torrent so we can tell it apart from the user's own.
+
+        A label is not a torrent option in Deluge 2.x — passing ``options["label"]`` is accepted and
+        silently dropped. Labels come from the Label plugin, have their own RPC methods, and can only
+        be set on a torrent that already exists.
+        """
+        try:
+            await self._call("label.add", [tag])
+        except DelugeError as e:
+            if "already exists" not in str(e).lower():  # created on an earlier run; anything else is real
+                raise
+        await self._call("label.set_torrent", [torrent_hash, tag])
 
     async def job(self, torrent_hash: str) -> Job | None:
         await self._login()
