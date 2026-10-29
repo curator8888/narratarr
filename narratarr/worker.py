@@ -7,7 +7,7 @@ For each queued book:
   organizing  - unzip, move into the library, add cover/description, notify Audiobookshelf
 
 Releases can also go to the user's own download clients instead: Usenet NZBs to
-SABnzbd or NZBGet, torrents to qBittorrent or Transmission. Narratarr waits for
+SABnzbd or NZBGet, torrents to qBittorrent, Transmission or Deluge. Narratarr waits for
 the client to finish, then brings the files into the library: moved for Usenet,
 hard-linked or copied for torrents so they can keep seeding.
 
@@ -479,7 +479,7 @@ class Worker:
             log.info("Couldn't clear job %s from the Usenet client's history", job_id)
 
     async def _process_torrent_client(self, book: dict, source) -> None:
-        """Torrents through the user's own qBittorrent or Transmission. The torrent keeps seeding afterwards."""
+        """Torrents through the user's own qBittorrent, Transmission or Deluge. The torrent keeps seeding afterwards."""
         settings = config.load()
         book_id = book["id"]
         name = settings.torrent_client

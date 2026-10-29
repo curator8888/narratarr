@@ -370,7 +370,7 @@ async def download(book_id: int):
 
 
 async def _drop_from_client(book: dict) -> None:
-    """Stopping a download in Narratarr stops it in SABnzbd, NZBGet, qBittorrent or Transmission too."""
+    """Stopping a download in Narratarr stops it in SABnzbd, NZBGet, qBittorrent, Transmission or Deluge too."""
     if not book["client_job_id"] or book["status"] not in db.ACTIVE:
         return
     s = config.load()
@@ -379,7 +379,7 @@ async def _drop_from_client(book: dict) -> None:
         if name in downloaders.USENET_CLIENTS:
             async with downloaders.usenet_client(s, name=name) as client:
                 await client.delete(book["client_job_id"])
-        elif name in ("qbittorrent", "transmission"):
+        elif name in ("qbittorrent", "transmission", "deluge"):
             async with downloaders.torrent_client(s, name=name) as client:
                 await client.delete(book["client_job_id"], files=True, tag=f"narratarr-{book['id']}")
     except ClientError:
@@ -776,7 +776,7 @@ async def test_client(name: str):
     try:
         if name in downloaders.USENET_CLIENTS:
             factory = downloaders.usenet_client
-        elif name in ("qbittorrent", "transmission"):
+        elif name in ("qbittorrent", "transmission", "deluge"):
             factory = downloaders.torrent_client
         else:
             raise HTTPException(404, "Unknown download client.")

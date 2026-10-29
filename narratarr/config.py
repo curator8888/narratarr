@@ -43,7 +43,7 @@ class Settings:
     nzbget_username: str = ""
     nzbget_password: str = ""
     nzbget_category: str = ""
-    torrent_client: str = "realdebrid"  # or "qbittorrent" / "transmission"
+    torrent_client: str = "realdebrid"  # or "qbittorrent" / "transmission" / "deluge"
     qbittorrent_url: str = ""
     qbittorrent_username: str = ""
     qbittorrent_password: str = ""
@@ -51,6 +51,8 @@ class Settings:
     transmission_url: str = ""
     transmission_username: str = ""
     transmission_password: str = ""
+    deluge_url: str = ""
+    deluge_password: str = ""
     # When a download client sees its downloads under a different path (e.g. another container).
     path_remote: str = ""
     path_local: str = ""
@@ -74,6 +76,7 @@ class Settings:
         d["nzbget_configured"] = bool(self.nzbget_url)
         d["qbittorrent_configured"] = bool(self.qbittorrent_url)
         d["transmission_configured"] = bool(self.transmission_url)
+        d["deluge_configured"] = bool(self.deluge_url)
         d["usenet_configured"] = d[f"{self.usenet_client}_configured"]
         d["torrent_configured"] = d["rd_configured" if self.torrent_client == "realdebrid" else f"{self.torrent_client}_configured"]
         return d
@@ -81,12 +84,12 @@ class Settings:
 
 SECRETS = (
     "rd_api_key", "audiobookshelf_token", "brave_api_key", "prowlarr_api_key", "sabnzbd_api_key",
-    "nzbget_password", "qbittorrent_password", "transmission_password",
+    "nzbget_password", "qbittorrent_password", "transmission_password", "deluge_password",
 )
 CHOICES = {
     "search_provider": ("audiobookbay", "brave"),
     "usenet_client": ("sabnzbd", "nzbget"),
-    "torrent_client": ("realdebrid", "qbittorrent", "transmission"),
+    "torrent_client": ("realdebrid", "qbittorrent", "transmission", "deluge"),
     "audible_region": ("us", "uk", "ca", "au", "in", "de", "fr", "it", "es", "jp"),
 }
 # Each service's secrets. Changing the service's address to a different host clears them, so a
@@ -97,6 +100,7 @@ SERVICE_SECRETS = {
     "nzbget_url": ("nzbget_password",),
     "qbittorrent_url": ("qbittorrent_password",),
     "transmission_url": ("transmission_password",),
+    "deluge_url": ("deluge_password",),
     "audiobookshelf_url": ("audiobookshelf_token",),
 }
 # Settings that were renamed; old settings files are read with the new names.

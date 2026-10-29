@@ -204,6 +204,75 @@ async def test_transmission_with_path_mapping(isolated_data):
     assert (original / "Dune.m4b").exists()
 
 
+class FakeDeluge:
+    """Deluge's web API answers 200 with an error object, and reports hashes in upper case."""
+
+    def __init__(self, folder: Path):
+        self.folder, self.polls, self.added, self.options, self.calls = folder, 0, None, None, []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        method, params = body["method"], body["params"]
+        self.calls.append(method)
+        if method == "auth.login":
+            return httpx.Response(200, json={"result": params == ["pw"], "error": None, "id": body["id"]})
+        if method == "web.connected":
+            return httpx.Response(200, json={"result": True, "error": None, "id": body["id"]})
+        if method == "get_plugins":
+            return httpx.Response(200, json={"result": {"Label": {"enabled": True}}, "error": None, "id": body["id"]})
+        if method == "daemon.get_version":
+            return httpx.Response(200, json={"result": "2.1.1", "error": None, "id": body["id"]})
+        if method == "core.add_torrent_magnet":
+            self.added, self.options = params[0], params[1]
+            return httpx.Response(200, json={"result": HASH.upper(), "error": None, "id": body["id"]})
+        if method == "core.get_torrent_status":
+            if params[1] == ["label"]:
+                return httpx.Response(200, json={"result": {"label": self.options.get("label", "")}, "error": None, "id": body["id"]})
+            self.polls += 1
+            done = self.polls > 1
+            status = {"name": self.folder.name, "download_location": "/data/torrents",
+                      "state": "Seeding" if done else "Downloading", "progress": 100 if done else 30,
+                      "is_finished": done, "download_payload_rate": 500, "message": ""}
+            return httpx.Response(200, json={"result": status, "error": None, "id": body["id"]})
+        if method == "core.remove_torrent":
+            self.removed = params
+            return httpx.Response(200, json={"result": True, "error": None, "id": body["id"]})
+        return httpx.Response(200, json={"result": None, "error": {"message": "Unknown method" + "", "code": 1}, "id": body["id"]})
+
+
+async def test_deluge_with_path_mapping(isolated_data):
+    original = finished_download(isolated_data)
+    config.update({"torrent_client": "deluge", "deluge_url": "http://deluge:8112", "deluge_password": "pw",
+                   "path_remote": "/data/torrents", "path_local": str(original.parent)})
+    fake = FakeDeluge(original)
+    book = torrent_book()
+
+    await Worker(transport=httpx.MockTransport(fake)).process(book["id"])
+
+    done = db.get(book["id"])
+    assert done["status"] == "completed", done["error"]
+    assert fake.added.startswith(f"magnet:?xt=urn:btih:{HASH}")
+    assert fake.options["label"] == f"narratarr-{book['id']}"  # our ownership tag, from the Label plugin
+    assert done["client_job_id"] == HASH  # Deluge's upper-case hash normalised
+    assert (original / "Dune.m4b").exists()
+
+
+async def test_deluge_reports_an_rpc_error(isolated_data):
+    """A failed call is a 200 with an error object, not an HTTP status."""
+
+    def handler(request):
+        body = json.loads(request.content)
+        if body["method"] == "auth.login":
+            return httpx.Response(200, json={"result": False, "error": {"message": "Bad login", "code": 1}, "id": 1})
+        return httpx.Response(200, json={"result": None, "error": None, "id": 1})
+
+    from narratarr.deluge import Deluge, DelugeError
+
+    with pytest.raises(DelugeError):
+        async with Deluge("http://deluge:8112", "wrong", transport=httpx.MockTransport(handler)) as d:
+            await d.version()
+
+
 def test_link_into_single_file_and_folder(tmp_path):
     src = tmp_path / "t"
     (src / "CD1").mkdir(parents=True)

@@ -2,6 +2,10 @@
 
 All notable changes to Narratarr. The app shows this under **Settings → Updates**.
 
+## Unreleased
+
+- **Deluge** alongside qBittorrent and Transmission for torrents. Deluge's web UI has no username, only a password; torrents are labelled `narratarr-<book id>` when its Label plugin is enabled, so Narratarr only ever removes torrents it added.
+
 ## 0.4.0 — 2026-10-29
 
 - **Update button.** Narratarr checks GitHub once a day for a new release and shows a badge in the sidebar. Native installs can update themselves with one click; Docker users get the command to run. Turn the check off under Settings → Updates.

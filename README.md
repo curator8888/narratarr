@@ -73,7 +73,7 @@ No other app needed. You get chapters (including the chapter markers inside `.m4
 - **Continue listening** shelf and finished-book tracking
 - Looks at home on a **phone**: add it to your home screen and listen anywhere on your Wi-Fi
 - **Light and dark** themes that follow your system
-- Plugs into your **\*arr stack**: **Prowlarr** for search; **SABnzbd** or **NZBGet** for Usenet; **qBittorrent**, **Transmission** or Real-Debrid for torrents
+- Plugs into your **\*arr stack**: **Prowlarr** for search; **SABnzbd** or **NZBGet** for Usenet; **qBittorrent**, **Transmission**, **Deluge** or Real-Debrid for torrents
 - **Wanted list** that fills itself: follow **authors and series** and new releases are found and downloaded automatically
 - **Import** the audiobooks you already have, or point it at an existing Audiobookshelf library
 - Optional **Audiobookshelf** rescan after every download, so your other apps see new books right away
@@ -210,7 +210,7 @@ uv sync && uv run narratarr
 flowchart LR
     A["🔎 Discover & search"] --> B{"Which source?"}
     B -- "LibriVox · Old-Time Radio" --> C["⬇️ Direct HTTPS download<br/>from the Internet Archive"]
-    B -- "Torrents · AudiobookBay, Prowlarr" --> D["🧲 Real-Debrid, qBittorrent<br/>or Transmission"]
+    B -- "Torrents · AudiobookBay, Prowlarr" --> D["🧲 Real-Debrid, qBittorrent,<br/>Transmission or Deluge"]
     B -- "Usenet · Prowlarr" --> U["📰 SABnzbd or NZBGet<br/>downloaded and unpacked"]
     W["⭐ Wanted · followed authors"] -- "searched automatically" --> B
     I["📁 Books you already have"] --> E
@@ -225,7 +225,7 @@ flowchart LR
 | Step | What happens |
 | --- | --- |
 | **Queue** | Books you add wait in a queue (2 at a time by default). Interrupted downloads pick up again when the app restarts. |
-| **Fetch** | Free sources download straight over HTTPS. Torrents go through [Real-Debrid](https://real-debrid.com) (nothing is shared from your machine) or your own qBittorrent or Transmission. Usenet releases go to your SABnzbd or NZBGet, and Narratarr picks up the files when it has finished unpacking. |
+| **Fetch** | Free sources download straight over HTTPS. Torrents go through [Real-Debrid](https://real-debrid.com) (nothing is shared from your machine) or your own qBittorrent, Transmission or Deluge. Usenet releases go to your SABnzbd or NZBGet, and Narratarr picks up the files when it has finished unpacking. |
 | **Organize** | Archives are unzipped safely, files move into `{author}/{title}` (configurable), and `cover.jpg`, `desc.txt` and `reader.txt` are written next to them, the layout Audiobookshelf expects. |
 | **Listen** | The player treats a book as one timeline, whether it's a single `.m4b` or 40 `.mp3` parts, and streams it to any browser with seeking. |
 
@@ -236,7 +236,7 @@ flowchart LR
 | **LibriVox** | ~22,000 public-domain audiobooks read by volunteers: Austen, Doyle, Dickens, Poe, Twain… | Free, direct from the Internet Archive |
 | **Old-Time Radio** | ~9,000 classic radio dramas and comedies, 1930s–60s | Free, direct from the Internet Archive. Some full series are several GB, and the size is shown before you download |
 | **AudiobookBay** *(optional)* | Torrent listings | Via Real-Debrid (paid account required) |
-| **Prowlarr** *(optional)* | Whatever indexers you've added to your own [Prowlarr](https://prowlarr.com) | Usenet via SABnzbd or NZBGet; torrents via Real-Debrid, qBittorrent or Transmission |
+| **Prowlarr** *(optional)* | Whatever indexers you've added to your own [Prowlarr](https://prowlarr.com) | Usenet via SABnzbd or NZBGet; torrents via Real-Debrid, qBittorrent, Transmission or Deluge |
 | **Audible catalog** *(with Prowlarr)* | Every audiobook in Audible's store, with covers, series and release dates | Nothing downloads from Audible: books go to **Wanted** and Narratarr finds them on your indexers (or free on LibriVox) |
 
 Narratarr deliberately sticks to the Internet Archive's **curated** LibriVox and Old-Time Radio collections. The Archive's general uploads include copyrighted audiobooks posted without permission, so those are left out.
@@ -255,13 +255,14 @@ Already running an \*arr stack? Narratarr searches the indexers in your Prowlarr
 | **Torrents** | **Real-Debrid** | API key from [real-debrid.com/apitoken](https://real-debrid.com/apitoken). Nothing is shared from your machine |
 | | **qBittorrent** | Web UI address, username and password. Torrents get an `audiobooks` category |
 | | **Transmission** | Address (e.g. `http://localhost:9091`), plus a username and password if you set one |
+| | **Deluge** | Web UI address (e.g. `http://localhost:8112`) and its password. Deluge has no username. Torrents are labelled `narratarr-<book id>` when the Label plugin is enabled |
 
 Press **Test** next to each one. Once Prowlarr is connected, a **Prowlarr** tab (and an **Audible catalog** tab) appears on Discover. Each Prowlarr result shows its indexer, size, format, and whether it's Usenet or a torrent. Open one and Narratarr matches the release name to the real book, so it's filed under the right author and title, with cover art.
 
 **What happens after you press Download:**
 
 - **Usenet:** the NZB goes to SABnzbd or NZBGet. When it has downloaded, repaired and unpacked the release, Narratarr moves the files into your library and clears the job from the client's history.
-- **qBittorrent / Transmission:** when the torrent finishes, Narratarr **hard-links** the files into your library (copying only if they're on different drives). The torrent keeps seeding, which matters on private trackers.
+- **qBittorrent / Transmission / Deluge:** when the torrent finishes, Narratarr **hard-links** the files into your library (copying only if they're on different drives). The torrent keeps seeding, which matters on private trackers.
 - **Stop or Remove** in Narratarr also removes an unfinished download from the client.
 
 Narratarr searches category `3030` (*Audio › Audiobook*) by default; you can add more under **Settings → Prowlarr**. To go easy on indexer API limits, each search is sent once as typed, and a second, spelling-corrected search is only made when the first finds little.
@@ -339,11 +340,11 @@ Narratarr has no telemetry and phones nobody. These are the only outside service
 | **Apple's audiobook search** (itunes.apple.com) | What you type in the search box, and Prowlarr release names (to work out the real title) | Only while **Smart search** is on |
 | **Audible's catalog** and **Audnexus** (api.audnex.us) | Your searches on the Audible tab, and the authors and series you follow | Using the Audible tab; following |
 | **Brave Search** | Your searches, with your Brave key | Only if you turn it on |
-| **Real-Debrid**, **Prowlarr**, **SABnzbd**, **NZBGet**, **qBittorrent**, **Transmission**, **Audiobookshelf** | Whatever each needs, with the key you entered for it | Only the ones you set up |
+| **Real-Debrid**, **Prowlarr**, **SABnzbd**, **NZBGet**, **qBittorrent**, **Transmission**, **Deluge**, **Audiobookshelf** | Whatever each needs, with the key you entered for it | Only the ones you set up |
 | **Cover image hosts** (archive.org, Amazon's image CDN, your indexers) | Nothing but the image request, with no referrer | Your browser loads cover art directly |
 | **GitHub** (api.github.com) | Nothing but the request for the latest release | Once a day, for the update badge. Off under Settings → Updates |
 
-Fonts are bundled, so the UI itself never contacts a CDN. Torrents downloaded through **qBittorrent or Transmission** expose your IP address to other peers, as with any torrent client; Real-Debrid doesn't.
+Fonts are bundled, so the UI itself never contacts a CDN. Torrents downloaded through **qBittorrent, Transmission or Deluge** expose your IP address to other peers, as with any torrent client; Real-Debrid doesn't.
 
 <br>
 
@@ -363,7 +364,7 @@ Smart search sends what you type to Apple's public search API. You can turn it o
 <details>
 <summary><b>Do I need Real-Debrid?</b></summary>
 
-No. LibriVox and Old-Time Radio download directly and for free. Usenet results go through SABnzbd or NZBGet, and torrents can use your own qBittorrent or Transmission instead of Real-Debrid.
+No. LibriVox and Old-Time Radio download directly and for free. Usenet results go through SABnzbd or NZBGet, and torrents can use your own qBittorrent, Transmission or Deluge instead of Real-Debrid.
 </details>
 
 <details>
@@ -381,7 +382,7 @@ Books go to your library folder (`~/Audiobooks` by default). Settings and the li
 <details>
 <summary><b>Which download clients does it work with?</b></summary>
 
-Prowlarr for searching; SABnzbd and NZBGet for Usenet; Real-Debrid, qBittorrent and Transmission for torrents. See [Your \*arr stack](#your-arr-stack-prowlarr-and-download-clients). Deluge support would be a welcome contribution.
+Prowlarr for searching; SABnzbd and NZBGet for Usenet; Real-Debrid, qBittorrent, Transmission and Deluge for torrents. See [Your \*arr stack](#your-arr-stack-prowlarr-and-download-clients).
 </details>
 
 <details>

@@ -1,4 +1,4 @@
-"""Download clients the user runs themselves: Usenet (SABnzbd, NZBGet) and torrents (qBittorrent, Transmission).
+"""Download clients the user runs themselves: Usenet (SABnzbd, NZBGet) and torrents (qBittorrent, Transmission, Deluge).
 
 Each client reports a job in the same shape, so the download pipeline doesn't
 care which one is in use. Real-Debrid is handled separately (it's a service
@@ -29,7 +29,9 @@ class ClientError(Exception):
 
 
 USENET_CLIENTS = {"sabnzbd": "SABnzbd", "nzbget": "NZBGet"}
-TORRENT_CLIENTS = {"realdebrid": "Real-Debrid", "qbittorrent": "qBittorrent", "transmission": "Transmission"}
+TORRENT_CLIENTS = {
+    "realdebrid": "Real-Debrid", "qbittorrent": "qBittorrent", "transmission": "Transmission", "deluge": "Deluge",
+}
 
 
 def usenet_configured(s: config.Settings, name: str | None = None) -> bool:
@@ -45,6 +47,8 @@ def torrent_configured(s: config.Settings, name: str | None = None) -> bool:
         return bool(s.qbittorrent_url)
     if name == "transmission":
         return bool(s.transmission_url)
+    if name == "deluge":
+        return bool(s.deluge_url)
     return bool(s.rd_api_key)
 
 
@@ -69,6 +73,10 @@ def torrent_client(s: config.Settings, transport: httpx.AsyncBaseTransport | Non
         from .transmission import Transmission
 
         return Transmission(s.transmission_url, s.transmission_username, s.transmission_password, transport=transport)
+    if name == "deluge":
+        from .deluge import Deluge
+
+        return Deluge(s.deluge_url, s.deluge_password, transport=transport)
     raise ClientError("Real-Debrid isn't a torrent client Narratarr can hand torrents to.")
 
 
