@@ -204,6 +204,25 @@ async def smart_search(source: Source, query: str, batch: int = 1, use_suggestio
     return {"items": rank(items, queries), "page": batch, "total_pages": total_batches, "did_you_mean": did_you_mean}
 
 
+async def latest_batch(source: Source, batch: int = 1, category: str | None = None, pages: int = 3) -> dict:
+    """Several listing pages at once, for sites that show only a handful of books per page."""
+    first = (batch - 1) * pages + 1
+    results = await asyncio.gather(*(source.latest(p, category) for p in range(first, first + pages)), return_exceptions=True)
+    errors = [r for r in results if isinstance(r, BaseException)]
+    if errors and len(errors) == len(results):
+        raise errors[0]
+    items, seen, total = [], set(), 0
+    for r in results:
+        if isinstance(r, BaseException):
+            continue  # a page past the end, or one slow page, shouldn't sink the rest
+        total = max(total, r.total_pages)
+        for item in r.items:
+            if item.url not in seen:
+                seen.add(item.url)
+                items.append(item.to_dict())
+    return {"items": items, "page": batch, "total_pages": max(1, -(-total // pages))}
+
+
 async def careful_search(source: Source, query: str, use_suggestions: bool = True) -> dict:
     """For sources where every query costs something (Prowlarr spends each indexer's API allowance):
     search as typed, and only try a corrected spelling when that finds little."""

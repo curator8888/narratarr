@@ -201,6 +201,8 @@ async def discover(q: str = "", category: str = "", page: int = 1, source: str =
             data = {**(await src.search(q.strip(), page)).to_dict(), "did_you_mean": ""}
         elif q.strip():
             data = await search.smart_search(src, q.strip(), page, use_suggestions=settings.smart_search)
+        elif src.name == "audiobookbay":
+            data = await search.latest_batch(src, page, category or None)  # the site shows only 9 per page
         else:
             data = (await src.latest(page, category or None)).to_dict()
     except (ProwlarrError, audible.AudibleError) as e:
