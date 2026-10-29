@@ -5,7 +5,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.5 /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
 WORKDIR /app
 # Dependencies first, so code changes don't reinstall them.
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md CHANGELOG.md ./
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
 COPY narratarr ./narratarr
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-editable
