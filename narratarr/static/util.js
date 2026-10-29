@@ -43,6 +43,8 @@ export async function api(path, opts = {}) {
   const res = await fetch(path, init);
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
+  // Signed out (the session expired, or a password changed elsewhere): the app shows the sign-in screen.
+  if (res.status === 401 && !path.startsWith("/api/auth/")) window.dispatchEvent(new Event("narratarr:signed-out"));
   if (!res.ok) throw new Error((data && (typeof data.detail === "string" ? data.detail : "Request failed")) || res.statusText);
   return data;
 }

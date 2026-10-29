@@ -1,6 +1,6 @@
 [project]
 name = "narratarr"
-version = "0.5.0"
+version = "0.5.5"
 description = "An *arr-style audiobook manager with a built-in player: discover, download, organize and listen."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -47,3 +47,4 @@ packages = ["narratarr"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+markers = ["real_auth: go through real accounts and sessions instead of the signed-in test admin"]

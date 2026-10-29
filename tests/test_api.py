@@ -68,14 +68,3 @@ def test_remove_book(client):
     book = client.post("/api/library", json={"url": BOOK_URL, "download": False}).json()
     assert client.delete(f"/api/library/{book['id']}").json() == {"ok": True, "kept": ""}
     assert client.get("/api/library").json() == []
-
-
-def test_optional_password(client, monkeypatch):
-    assert client.get("/api/stats").status_code == 200  # no password set: open
-
-    monkeypatch.setenv("NARRATARR_PASSWORD", "s3cret")
-    assert client.get("/api/stats").status_code == 401
-    assert client.get("/").headers["www-authenticate"].startswith("Basic")
-    assert client.get("/api/stats", auth=("anyone", "wrong")).status_code == 401
-    assert client.get("/api/stats", auth=("anyone", "s3cret")).status_code == 200
-    assert client.get("/api/health").json() == {"ok": True}  # Docker health checks stay open

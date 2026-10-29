@@ -121,8 +121,9 @@ img { display: block; }
   background: var(--accent-grad); color: #1d1209;
 }
 
+.sidebar-foot { margin-top: auto; display: grid; gap: 10px; }
 .rd-pill {
-  margin-top: auto; display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 10px;
   padding: 11px 14px; border-radius: 12px; border: 1px solid var(--border);
   background: var(--surface); font-size: 13px; color: var(--text-2);
 }
@@ -891,3 +892,51 @@ img { display: block; }
 .update-progress { display: flex; align-items: center; gap: 12px; margin-top: 18px; padding: 14px 16px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); font-size: 13.5px; }
 .update-progress.bad { color: var(--err); border-color: color-mix(in oklab, var(--err) 40%, transparent); }
 .update-cmd { display: block; margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--surface-2); font: 12.5px/1.6 var(--mono); color: var(--text); white-space: pre-wrap; word-break: break-all; }
+
+
+/* ---- accounts ------------------------------------------------------------- */
+
+/* Listeners browse, request and listen; running the place is for admins. */
+body.listener [data-nav="settings"], body.listener #update-pill, body.listener #rd-pill,
+body.listener #import-btn, body.listener [data-import], body.listener [data-act="remove"] { display: none !important; }
+
+.account { display: flex; align-items: center; gap: 11px; width: 100%; padding: 8px 10px 8px 8px; border: 1px solid transparent; border-radius: 14px; background: none; text-align: left; cursor: pointer; transition: background 0.2s, border-color 0.2s; }
+.account:hover { background: var(--surface-2); border-color: var(--border); }
+.avatar { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; flex: none; font: 600 14px/1 var(--sans); color: #1d1209; background: var(--accent-grad); text-transform: uppercase; }
+.account .who { display: grid; min-width: 0; }
+.account b { font-size: 13.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.account small { font-size: 12px; color: var(--text-3); }
+
+/* The sign-in and first-run screen: nothing else shows until it's done. */
+body.gated .sidebar, body.gated .main { display: none; }
+.gate { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 24px 16px; overflow-y: auto; }
+.gate-card { width: min(420px, 100%); padding: 34px 30px 30px; border-radius: 26px; background: color-mix(in oklab, var(--bg-raised) 88%, transparent); border: 1px solid var(--border-strong); box-shadow: var(--shadow-pop); backdrop-filter: blur(24px) saturate(140%); display: grid; gap: 18px; animation: pop 0.45s var(--ease); }
+.gate-card img { border-radius: 14px; box-shadow: 0 10px 30px -8px rgba(236, 111, 85, 0.6); }
+.gate-card h1 { margin: 4px 0 0; font: 500 30px/1.15 var(--serif); letter-spacing: -0.01em; }
+.gate-card h1 em { font-style: italic; color: var(--accent); }
+.gate-card > p { margin: -8px 0 4px; color: var(--text-2); font-size: 14.5px; line-height: 1.5; }
+.gate-card .btn.primary { height: 46px; justify-content: center; margin-top: 4px; }
+.gate-card .field .hint code { overflow-wrap: anywhere; }
+
+.form-error { color: var(--err); font-size: 13.5px; }
+.form-error:empty { display: none; }
+.modal .field { margin-top: 18px; }
+.modal .segmented { align-self: flex-start; }
+
+.user-list { display: grid; gap: 8px; }
+.user-row { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--border); background: var(--surface); }
+.user-row .name { min-width: 0; }
+.user-row .name b { display: block; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-row .name small { color: var(--text-3); font-size: 12.5px; }
+.user-row .tools { display: flex; align-items: center; gap: 6px; }
+.user-row .select { height: 34px; }
+
+@media (max-width: 860px) {
+  .sidebar-foot { display: contents; }
+  .account { flex-direction: column; justify-content: center; gap: 3px; width: auto; padding: 8px 10px; border: 0; font-size: 11px; color: var(--text-2); background: none !important; }
+  .account .avatar { width: 22px; height: 22px; font-size: 11px; }
+  .account .who { display: none; }
+  .account::after { content: "You"; }
+  .user-row { grid-template-columns: 34px 1fr; }
+  .user-row .tools { grid-column: 1 / -1; justify-content: flex-end; }
+}

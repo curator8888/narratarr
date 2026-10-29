@@ -77,7 +77,7 @@ No other app needed. You get chapters (including the chapter markers inside `.m4
 - **Wanted list** that fills itself: follow **authors and series** and new releases are found and downloaded automatically
 - **Import** the audiobooks you already have, or point it at an existing Audiobookshelf library
 - **Audiobookshelf** in a click: Narratarr finds your server (on this machine, in Docker, across your network, or at a public address), you sign in once, and it rescans after every download
-- Optional **password** for when it's reachable from your network
+- **Accounts for the whole household**: admins run things, listeners browse, request and listen, and everyone keeps their own place in every book
 - **Pluggable sources**: adding a new catalog is one small Python class
 
 <br>
@@ -151,7 +151,6 @@ services:
       - PUID=1000          # run `id -u` to find yours
       - PGID=1000          # run `id -g` to find yours
       - TZ=Etc/UTC
-      # - NARRATARR_PASSWORD=change-me   # recommended if others can reach this port
     volumes:
       - ./config:/config            # settings + library database
       - ~/Audiobooks:/audiobooks    # where finished books go
@@ -317,18 +316,38 @@ A few things are set with environment variables instead:
 | `NARRATARR_HOST` | `127.0.0.1` (`0.0.0.0` in Docker) | Address to listen on. Use `0.0.0.0` to reach it from other devices |
 | `NARRATARR_DATA` | `~/.narratarr` (`/config` in Docker) | Settings and library database |
 | `NARRATARR_LIBRARY` | `~/Audiobooks` (`/audiobooks` in Docker) | Default library folder for new installs |
-| `NARRATARR_PASSWORD` | *(none)* | Turns on a login prompt. Any username, this password |
+| `NARRATARR_PASSWORD` | *(none)* | Before 0.5.5 this was a single shared password. If it's set when you upgrade, it becomes the password of an admin account called `admin`; after that it's ignored |
 | `NARRATARR_HOSTS` | *(none)* | Extra hostnames Narratarr should answer to, comma-separated (`books.example.com, *.home.example`). IP addresses, plain machine names and `.local` / `.lan` / `.home` / `.internal` / `.ts.net` names always work; anything else is refused to block DNS-rebinding attacks |
 | `PUID` / `PGID` | `1000` | Docker only: the user and group files are written as |
 
+### Accounts
+
+Everyone signs in. The installer asks for the first account, the **admin**; if you skipped it (or updated from before 0.5.5), the first time you open Narratarr it asks you to create one. Opened from another network, that first screen also wants the **setup code** Narratarr printed when it started (`docker logs narratarr`, or `~/.narratarr/narratarr.log`), so nobody else can claim a fresh install.
+
+Add people under **Settings → Users**:
+
+| Role | Can |
+| --- | --- |
+| **Admin** | Everything: settings, download clients, imports, removing books, and managing users |
+| **Listener** | Browse, search, request and download books, follow authors, and listen. Each listener has their own place in every book and their own Continue listening shelf |
+
+Everyone can change their own password from the account button at the bottom of the sidebar. Forgot the admin password? Reset it from a terminal on the machine running Narratarr:
+
+```bash
+narratarr users passwd <name>                              # native install
+docker exec -it -u "$(id -u):$(id -g)" narratarr narratarr users passwd <name>    # Docker
+```
+
+`narratarr users` also has `add`, `list`, `role` and `remove`.
+
 ### Listening on your phone
 
-Start Narratarr so other devices can reach it (Docker already does), then open `http://<your-computer's-IP>:8484` on your phone while it's on the same Wi-Fi. Use **Add to Home Screen** for an app-like icon. If other people share your network, set `NARRATARR_PASSWORD`.
+Start Narratarr so other devices can reach it (Docker already does), then open `http://<your-computer's-IP>:8484` on your phone while it's on the same Wi-Fi. Use **Add to Home Screen** for an app-like icon. Phones stay signed in for 30 days.
 
 > [!IMPORTANT]
 > Narratarr is built for your home network. Don't expose it directly to the internet. If you want remote access, put it behind a VPN such as Tailscale or WireGuard, or behind a reverse proxy with proper authentication, and add the proxy's hostname to `NARRATARR_HOSTS`.
 >
-> Without a password, anyone who can reach the port can change settings, download to your machine and read what's in your library. Narratarr limits the damage (pointing a service address at a new host drops that service's saved key, and other websites open in your browser can't talk to it), but on a shared network, set the password.
+> Everyone signs in, so a stranger who reaches the port gets a sign-in screen and nothing else. **Don't ask for a password on my home network** (Settings → Users) skips sign-in for this machine and your LAN; leave it off if Narratarr can be reached from the internet.
 
 ### What leaves your machine
 

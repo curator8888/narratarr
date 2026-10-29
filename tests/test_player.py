@@ -106,14 +106,15 @@ def test_media_requires_downloaded_book(client):
 
 def test_progress_is_saved_and_finishing_resets_position(client, book_dir):
     book = completed_book(book_dir)
+    mine = lambda: next(b for b in client.get("/api/library").json() if b["id"] == book["id"])  # noqa: E731
     client.put(f"/api/library/{book['id']}/progress", json={"position": 1234.5, "duration": 5000})
-    saved = db.get(book["id"])
+    saved = mine()
     assert saved["listen_position"] == 1234.5
     assert saved["listen_duration"] == 5000
     assert saved["finished"] is False
 
     client.put(f"/api/library/{book['id']}/progress", json={"position": 4999, "finished": True})
-    done = db.get(book["id"])
+    done = mine()
     assert done["finished"] is True
     assert done["listen_position"] == 0
 

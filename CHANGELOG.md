@@ -2,6 +2,13 @@
 
 All notable changes to Narratarr. The app shows this under **Settings → Updates**.
 
+## 0.5.5 — 2026-10-29
+
+- **Accounts.** Everyone signs in now. Admins run settings, download clients, imports and users; listeners browse, request and listen. Each person keeps their own place in every book and their own Continue listening shelf. Add people under **Settings → Users**; everyone can change their own password from the account button in the sidebar.
+- **After updating,** Narratarr asks you to create the admin account the first time you open it, and your listening progress so far becomes that account's. From another network it also asks for the setup code in Narratarr's log. If you used `NARRATARR_PASSWORD`, it becomes the password of an admin account called `admin` instead.
+- **Home network shortcut.** Settings → Users → *Don't ask for a password on my home network* skips sign-in for this machine and your LAN. Off by default, and never applies to requests through a reverse proxy.
+- The installer creates the admin account as part of setup, and `narratarr users add|list|passwd|role|remove` manages accounts from a terminal, including resetting a forgotten admin password.
+
 ## 0.5.0 — 2026-10-29
 
 - **Connect Audiobookshelf in a click.** Press **Find** and Narratarr looks for Audiobookshelf on this computer, in Docker and across your home network, or at an address you type, public IPs and domains included. Sign in once and it creates its own API key; your password isn't saved. Pick the library from a list instead of hunting for its ID. Plain-http addresses on the internet ask before sending a password.

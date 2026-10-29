@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from . import config
@@ -86,6 +87,34 @@ CREATE TABLE IF NOT EXISTS follows (
 );
 """
 
+ACCOUNTS = """
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL,                -- "admin" or "listener"
+    created_at    REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,                -- SHA-256 of the cookie; the token itself isn't stored
+    user_id    INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS progress (           -- each person's place in each book
+    user_id     INTEGER NOT NULL,
+    book_id     INTEGER NOT NULL,
+    position    REAL NOT NULL DEFAULT 0,
+    duration    REAL NOT NULL DEFAULT 0,
+    listened_at REAL,
+    finished    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, book_id)
+);
+"""
+
+# Whose listening progress book rows carry: set per request to the signed-in user.
+viewer: ContextVar[int | None] = ContextVar("viewer", default=None)
+
 
 def db_path() -> Path:
     return config.DATA_DIR / "library.db"
@@ -105,7 +134,7 @@ def connect():
 
 def init() -> None:
     with connect() as conn:
-        conn.executescript(SCHEMA + FOLLOWS)
+        conn.executescript(SCHEMA + FOLLOWS + ACCOUNTS)
         existing = {r["name"] for r in conn.execute("PRAGMA table_info(books)")}
         for col, ddl in MIGRATIONS.items():
             if col not in existing:
@@ -132,25 +161,58 @@ def _row(row: sqlite3.Row | None) -> dict | None:
     return d
 
 
+def _books(conn: sqlite3.Connection, sql: str, args: tuple = ()) -> list[dict]:
+    """Book rows, carrying the current viewer's own place in each one."""
+    books = [_row(r) for r in conn.execute(sql, args).fetchall()]
+    user_id = viewer.get()
+    if user_id is None or not books:
+        return books
+    mine = {r["book_id"]: r for r in conn.execute("SELECT * FROM progress WHERE user_id=?", (user_id,))}
+    for b in books:
+        p = mine.get(b["id"])
+        b["listen_position"] = p["position"] if p else 0.0
+        b["listen_duration"] = p["duration"] if p else 0.0
+        b["listened_at"] = p["listened_at"] if p else None
+        b["finished"] = bool(p["finished"]) if p else False
+    return books
+
+
 def list_books() -> list[dict]:
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM books ORDER BY added_at DESC").fetchall()
-    return [_row(r) for r in rows]
+        return _books(conn, "SELECT * FROM books ORDER BY added_at DESC")
+
+
+def _one(sql: str, args: tuple) -> dict | None:
+    with connect() as conn:
+        found = _books(conn, sql, args)
+    return found[0] if found else None
 
 
 def get(book_id: int) -> dict | None:
-    with connect() as conn:
-        return _row(conn.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone())
+    return _one("SELECT * FROM books WHERE id=?", (book_id,))
 
 
 def get_by_url(url: str) -> dict | None:
-    with connect() as conn:
-        return _row(conn.execute("SELECT * FROM books WHERE source_url=?", (url,)).fetchone())
+    return _one("SELECT * FROM books WHERE source_url=?", (url,))
 
 
 def get_by_path(path: str) -> dict | None:
+    return _one("SELECT * FROM books WHERE path=?", (path,))
+
+
+def save_progress(user_id: int, book_id: int, position: float | None = None, duration: float | None = None,
+                  finished: bool | None = None) -> None:
+    """Record where someone is in a book. Finishing it puts them back at the start for next time."""
+    if finished:
+        position = 0.0
     with connect() as conn:
-        return _row(conn.execute("SELECT * FROM books WHERE path=?", (path,)).fetchone())
+        conn.execute("INSERT OR IGNORE INTO progress (user_id, book_id) VALUES (?, ?)", (user_id, book_id))
+        sets, args = ["listened_at=?"], [time.time()]
+        for col, v in (("position", position), ("duration", duration), ("finished", finished)):
+            if v is not None:
+                sets.append(f"{col}=?")
+                args.append(int(v) if col == "finished" else v)
+        conn.execute(f"UPDATE progress SET {', '.join(sets)} WHERE user_id=? AND book_id=?", (*args, user_id, book_id))
 
 
 def insert(book: dict) -> dict:
@@ -180,6 +242,7 @@ def update(book_id: int, **changes) -> None:
 def delete(book_id: int) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM books WHERE id=?", (book_id,))
+        conn.execute("DELETE FROM progress WHERE book_id=?", (book_id,))
 
 
 def next_queued(exclude: set[int]) -> dict | None:

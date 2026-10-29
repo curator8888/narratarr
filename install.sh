@@ -19,7 +19,7 @@ LABEL="com.narratarr"
 
 # ---- options -----------------------------------------------------------------
 
-METHOD="" LIBRARY="" PORT="" AUTOSTART="" ASSUME_YES=0 UNINSTALL=0 DOCKER_DIR="" PASSWORD=""
+METHOD="" LIBRARY="" PORT="" AUTOSTART="" ASSUME_YES=0 UNINSTALL=0 DOCKER_DIR="" NEEDS_ACCOUNT=0
 
 usage() {
   cat <<EOF
@@ -250,6 +250,46 @@ choose_port() {
   case "$PORT" in ''|*[!0-9]*) die "\"$PORT\" isn't a port number." ;; esac
 }
 
+# create_account narratarr-command... -> makes the admin account, unless there already is one
+create_account() {
+  if "$@" users any >/dev/null 2>&1; then ok "Your accounts are already set up"; return 0; fi
+  if [ "$INTERACTIVE" = 0 ]; then
+    NEEDS_ACCOUNT=1; info "You'll create the admin account the first time you open Narratarr."; return 0
+  fi
+  info "Everyone signs in to Narratarr. This first account is the admin: it runs settings,"
+  info "downloads, and who else can sign in. Add family and friends as listeners later."
+  say ""
+  local name pw again
+  while :; do
+    ask "Username" "$(id -un 2>/dev/null || echo admin)"
+    name="$ANSWER"
+    case "$name" in
+      [!A-Za-z0-9]*|*[!A-Za-z0-9._@-]*) warn "Use letters, numbers, dots, dashes, underscores or @, starting with a letter or number." ;;
+      *) [ "${#name}" -le 32 ] && break; warn "Keep it to 32 characters." ;;
+    esac
+  done
+  while :; do
+    printf '  %s?%s Password %s(at least 8 characters; it won'"'"'t show)%s\n  %s›%s ' "$CORAL" "$R" "$MUTED" "$R" "$CORAL" "$R"
+    IFS= read -rs pw <"$TTY" || pw=""; printf '\n'
+    if [ "${#pw}" -lt 8 ]; then warn "That's shorter than 8 characters."; continue; fi
+    printf '  %s?%s Once more %s›%s ' "$CORAL" "$R" "$CORAL" "$R"
+    IFS= read -rs again <"$TTY" || again=""; printf '\n'
+    [ "$pw" = "$again" ] && break
+    warn "Those didn't match. Try again."
+  done
+  # The password goes in on stdin, so it never appears in the process list or shell history.
+  if printf '%s\n' "$pw" | "$@" users add "$name" --role admin --password-stdin >>"$LOG" 2>&1; then
+    ok "Created ${B}$name${R}, the admin account"
+  else
+    NEEDS_ACCOUNT=1
+    warn "Couldn't create the account: $(tail -n 1 "$LOG")"
+    info "You'll be asked to create it when you open Narratarr."
+  fi
+  pw="" again=""
+}
+
+first_visit_line() { [ "$NEEDS_ACCOUNT" = 1 ] && printf '%s' "First visit: create the admin account" || printf '%s' "Sign in:     with the account you just made"; }
+
 # ---- native (uv) -----------------------------------------------------------------
 
 ensure_uv() {
@@ -329,7 +369,7 @@ EOF
 }
 
 install_native() {
-  STEPS=4
+  STEPS=5
   step "Getting the tools"
   ensure_uv
 
@@ -351,6 +391,9 @@ install_native() {
   [ -x "$BIN" ] || die "Installed, but couldn't find the narratarr command."
   seed_settings
   ok "Installed $("$BIN" --version 2>/dev/null)"
+
+  step "Your account"
+  create_account env NARRATARR_DATA="$DATA_DIR" "$BIN"
 
   step "Starting it"
   local can_autostart=""
@@ -377,6 +420,7 @@ install_native() {
     open_browser "$url"
     box "${B}Narratarr is running.${R}" "" \
         "Open it:     ${CORAL}$url${R}" \
+        "$(first_visit_line)" \
         "Library:     $(pretty "$LIBRARY")" \
         "Settings:    $(pretty "$DATA_DIR")" "" \
         "Update:      run the install command again" \
@@ -387,6 +431,7 @@ install_native() {
     box "${B}Narratarr is installed.${R}" "" \
         "Start it:    ${CORAL}narratarr --port $PORT${R}" \
         "Then open:   $url" \
+        "$(first_visit_line)" \
         "Library:     $(pretty "$LIBRARY")" "" \
         "Update:      run the install command again"
   fi
@@ -399,7 +444,7 @@ compose() {
 }
 
 install_docker() {
-  STEPS=3
+  STEPS=4
   step "Checking Docker"
   command -v docker >/dev/null 2>&1 || die "Docker isn't installed. Get it from https://docs.docker.com/get-docker/"
   docker info >/dev/null 2>&1 || die "Docker is installed but not running. Start Docker (Desktop) and run this again."
@@ -413,16 +458,6 @@ install_docker() {
   [ -n "$DOCKER_DIR" ] || { ask "Where should Narratarr keep its settings?" "~/narratarr"; DOCKER_DIR="$ANSWER"; }
   DOCKER_DIR="$(expand "$DOCKER_DIR")"
   mkdir -p "$DOCKER_DIR/config"
-  if [ "$INTERACTIVE" = 1 ]; then
-    info "A password is a good idea if other people can reach this computer or server."
-    if confirm "Protect Narratarr with a password?" n; then
-      info "Type it and press enter (it won't show on screen). Any username works when you sign in."
-      while :; do
-        printf '  %s›%s ' "$CORAL" "$R"; IFS= read -rs PASSWORD <"$TTY" || PASSWORD=""; printf '\n'
-        case "$PASSWORD" in *"'"*) warn "Please pick a password without a ' (single quote)." ;; *) break ;; esac
-      done
-    fi
-  fi
   ok "Books will go to ${B}$(pretty "$LIBRARY")${R}"
 
   step "Installing Narratarr"
@@ -439,7 +474,6 @@ services:
       - PUID=\${PUID}
       - PGID=\${PGID}
       - TZ=\${TZ}
-      - NARRATARR_PASSWORD=\${NARRATARR_PASSWORD}
     volumes:
       - ./config:/config
       - \${NARRATARR_LIBRARY}:/audiobooks
@@ -450,7 +484,6 @@ EOF
 NARRATARR_IMAGE=$IMAGE
 NARRATARR_PORT=$PORT
 NARRATARR_LIBRARY='$LIBRARY'
-NARRATARR_PASSWORD='$PASSWORD'
 PUID=$(id -u)
 PGID=$(id -g)
 TZ=${tz:-Etc/UTC}
@@ -471,10 +504,14 @@ EOF
   run "Starting the container" compose up -d
   run "Starting Narratarr" wait_healthy "$PORT"
 
+  step "Your account"
+  create_account compose exec -T -u "$(id -u):$(id -g)" narratarr narratarr
+
   local url="http://127.0.0.1:$PORT"
   open_browser "$url"
   box "${B}Narratarr is running in Docker.${R}" "" \
       "Open it:     ${CORAL}$url${R}" \
+      "$(first_visit_line)" \
       "Library:     $(pretty "$LIBRARY")" \
       "Settings:    $(pretty "$DOCKER_DIR")" "" \
       "Update:      cd $(pretty "$DOCKER_DIR") && docker compose pull && docker compose up -d" \

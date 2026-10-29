@@ -50,9 +50,15 @@
       <svg viewBox="0 0 24 24"><path d="M12 4v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M5 20h14"/></svg>
       <span>Update available</span>
     </button>
-    <a class="rd-pill" id="rd-pill" href="#/settings">
-      <i></i><span>Real-Debrid</span>
-    </a>
+    <div class="sidebar-foot">
+      <a class="rd-pill" id="rd-pill" href="#/settings">
+        <i></i><span>Real-Debrid</span>
+      </a>
+      <button class="account" id="account" type="button" hidden aria-label="Your account">
+        <span class="avatar" id="account-avatar"></span>
+        <span class="who"><b id="account-name"></b><small id="account-role"></small></span>
+      </button>
+    </div>
   </aside>
 
   <main class="main">

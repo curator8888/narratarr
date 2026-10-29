@@ -15,12 +15,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import audible, audiobookshelf, brave, config, db, downloaders, importer, media, search, updates, wanted
+from . import audible, audiobookshelf, auth, brave, config, db, downloaders, importer, media, search, updates, users, wanted
 from .audiobookshelf import Audiobookshelf, AudiobookshelfError
 from .downloaders import ClientError
 from .realdebrid import RealDebrid, RealDebridError
@@ -33,6 +33,8 @@ STATIC = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    auth.adopt_env_password()
+    auth.announce_setup()
     worker = Worker()
     app.state.worker = worker
     app.state.tasks = set()
@@ -111,23 +113,24 @@ async def same_site_only(request, call_next):
 
 
 @app.middleware("http")
-async def require_password(request, call_next):
-    """Optional login (any username + $NARRATARR_PASSWORD), for when the app is reachable from a network."""
-    password = os.environ.get("NARRATARR_PASSWORD", "")
-    if not password or request.url.path == "/api/health":
+async def require_sign_in(request, call_next):
+    """Every API call needs a signed-in user (see auth.py for the exceptions); some need an admin."""
+    path = request.url.path
+    if not path.startswith("/api/") or path in auth.OPEN:
         return await call_next(request)
-    given = ""
-    scheme, _, encoded = request.headers.get("authorization", "").partition(" ")
-    if scheme.lower() == "basic":
-        try:
-            given = base64.b64decode(encoded).decode("utf-8").partition(":")[2]
-        except (ValueError, UnicodeDecodeError):
-            pass
-    if hmac.compare_digest(given.encode(), password.encode()):
+    user = auth.current_user(request)
+    if user is None:
+        setup = users.count() == 0
+        return JSONResponse({"detail": "Create the admin account first." if setup else "Sign in first.",
+                             "setup": setup}, status_code=401)
+    if user["role"] != "admin" and auth.admin_only(request.method, path):
+        return JSONResponse({"detail": "Only an admin can do that."}, status_code=403)
+    request.state.user = user
+    token = db.viewer.set(user["id"])
+    try:
         return await call_next(request)
-    return Response(
-        "Narratarr needs a password.", status_code=401, headers={"WWW-Authenticate": 'Basic realm="Narratarr"'}
-    )
+    finally:
+        db.viewer.reset(token)
 
 
 def _worker() -> Worker:
@@ -496,16 +499,9 @@ class Progress(BaseModel):
 
 
 @app.put("/api/library/{book_id}/progress")
-async def save_progress(book_id: int, body: Progress):
+async def save_progress(book_id: int, body: Progress, request: Request):
     _get_or_404(book_id)
-    changes = {"listen_position": max(0.0, body.position), "listened_at": time.time()}
-    if body.duration:
-        changes["listen_duration"] = body.duration
-    if body.finished is not None:
-        changes["finished"] = int(body.finished)
-        if body.finished:
-            changes["listen_position"] = 0.0
-    db.update(book_id, **changes)
+    db.save_progress(request.state.user["id"], book_id, max(0.0, body.position), body.duration or None, body.finished)
     return {"ok": True}
 
 
@@ -739,9 +735,20 @@ async def apply_update(body: Update):
 # ---- settings -------------------------------------------------------------
 
 
+# What listeners see of the settings: enough for the app to know what's set up, no addresses or keys.
+LISTENER_SETTINGS = (
+    "rd_configured", "brave_configured", "prowlarr_configured", "usenet_configured", "torrent_configured",
+    "usenet_client", "torrent_client", "smart_search", "search_provider", "audible_region", "check_updates",
+    "auto_search", "auto_search_hours",
+)
+
+
 @app.get("/api/settings")
-async def get_settings():
-    return config.load().public()
+async def get_settings(request: Request):
+    public = config.load().public()
+    if request.state.user["role"] == "admin":
+        return public
+    return {k: v for k, v in public.items() if k in LISTENER_SETTINGS}
 
 
 @app.put("/api/settings")
@@ -880,3 +887,130 @@ async def test_audiobookshelf():
     if not library:
         raise HTTPException(400, "Connected, but no library is chosen. Pick the one Narratarr's books go into.")
     return {"version": status["version"], "library": library["name"]}
+
+
+# ---- accounts ---------------------------------------------------------------------
+
+
+class Credentials(BaseModel):
+    username: str
+    password: str
+    code: str = ""  # the setup code, when creating the first admin from outside the home network
+
+
+def _signed_in(request: Request, user: dict) -> JSONResponse:
+    resp = JSONResponse({"user": user})
+    resp.set_cookie(value=users.start_session(user["id"]), max_age=users.SESSION_SECONDS, **auth.cookie_args(request))
+    return resp
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    setup = users.count() == 0
+    return {
+        "setup": setup,
+        "setup_code_needed": setup and not auth.is_local(request),
+        "user": None if setup else auth.current_user(request),
+    }
+
+
+@app.post("/api/auth/setup")
+async def auth_setup(body: Credentials, request: Request):
+    """Create the first admin. Only possible while there are no accounts at all."""
+    if users.count():
+        raise HTTPException(409, "Narratarr already has an admin. Sign in instead.")
+    if auth.too_many_tries(request):
+        raise HTTPException(429, "Too many tries. Wait ten minutes and try again.")
+    if not auth.is_local(request) and not hmac.compare_digest(body.code.strip(), auth.setup_code()):
+        auth.failed_try(request)
+        raise HTTPException(403, "That setup code isn't right. It's in Narratarr's log (docker logs narratarr).")
+    try:
+        user = users.create(body.username, body.password, "admin")
+    except users.UserError as e:
+        raise HTTPException(400, str(e))
+    return _signed_in(request, user)
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: Credentials, request: Request):
+    if auth.too_many_tries(request):
+        raise HTTPException(429, "Too many tries. Wait ten minutes and try again.")
+    user = await asyncio.to_thread(users.authenticate, body.username, body.password)
+    if not user:
+        auth.failed_try(request)
+        raise HTTPException(401, "That username and password don't match.")
+    return _signed_in(request, user)
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    users.end_session(request.cookies.get(auth.COOKIE, ""))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+class NewPassword(BaseModel):
+    current: str
+    password: str
+
+
+@app.put("/api/auth/password")
+async def change_own_password(body: NewPassword, request: Request):
+    me = request.state.user
+    if not await asyncio.to_thread(users.authenticate, me["username"], body.current):
+        raise HTTPException(400, "Your current password isn't right.")
+    try:
+        users.set_password(me["id"], body.password)  # signs out everywhere, so sign this browser back in
+    except users.UserError as e:
+        raise HTTPException(400, str(e))
+    return _signed_in(request, me)
+
+
+class NewUser(BaseModel):
+    username: str
+    password: str
+    role: str = "listener"
+
+
+class UserChange(BaseModel):
+    role: str | None = None
+    password: str | None = None
+
+
+@app.get("/api/users")
+async def list_users():
+    return users.all_users()
+
+
+@app.post("/api/users")
+async def add_user(body: NewUser):
+    try:
+        return users.create(body.username, body.password, body.role)
+    except users.UserError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.patch("/api/users/{user_id}")
+async def change_user(user_id: int, body: UserChange):
+    if not users.get(user_id):
+        raise HTTPException(404, "No such user.")
+    try:
+        if body.role:
+            users.set_role(user_id, body.role)
+        if body.password:
+            users.set_password(user_id, body.password)
+    except users.UserError as e:
+        raise HTTPException(400, str(e))
+    return users.get(user_id)
+
+
+@app.delete("/api/users/{user_id}")
+async def remove_user(user_id: int):
+    if not users.get(user_id):
+        raise HTTPException(404, "No such user.")
+    try:
+        users.delete(user_id)
+    except users.UserError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}

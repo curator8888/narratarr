@@ -218,7 +218,8 @@ async function refreshFollows() {
 const views = { discover: Discover, library: Library, authors: Authors, activity: Activity, settings: Settings };
 
 function route() {
-  const [name = "discover", param] = location.hash.replace(/^#\/?/, "").split("?")[0].split("/");
+  let [name = "discover", param] = location.hash.replace(/^#\/?/, "").split("?")[0].split("/");
+  if (name === "settings" && state.user?.role !== "admin") name = "discover";
   const View = views[name] || Discover;
   $$("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === name));
   state.view?.destroy?.();
@@ -1290,6 +1291,18 @@ function Settings(root) {
       </section>
 
       <section class="panel">
+        <div><h3>Users</h3><p class="desc">Who can sign in. Admins run Narratarr; listeners browse, request and listen, each with their own place in every book.</p></div>
+        <div class="body">
+          <div class="user-list" id="user-list"><span class="spinner"></span></div>
+          <div><button class="btn" type="button" id="add-user">${I.plus} Add someone</button></div>
+          <div class="field">
+            <label class="switch"><input type="checkbox" name="auth_local_bypass" ${s.auth_local_bypass ? "checked" : ""}><i></i>Don’t ask for a password on my home network</label>
+            <span class="hint">Phones and computers on this network open Narratarr signed in as the first admin. Leave this off if Narratarr can be reached from the internet. Anything that comes through a reverse proxy always has to sign in.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
         <div><h3>Updates</h3><p class="desc">You have Narratarr <b>${esc(state.updates?.current || "")}</b>.${state.updates?.update_available ? ` Version <b>${esc(state.updates.latest.version)}</b> is out.` : state.updates?.latest ? " You’re up to date." : ""}</p></div>
         <div class="body">
           <div class="field">
@@ -1623,6 +1636,7 @@ function Settings(root) {
     data.smart_search = form.smart_search.checked;
     data.auto_search = form.auto_search.checked;
     data.check_updates = form.check_updates.checked;
+    data.auth_local_bypass = form.auth_local_bypass.checked;
     data.max_concurrent = Number(data.max_concurrent) || 1;
     data.auto_search_hours = Number(data.auto_search_hours) || 12;
     // A bare address ("abs.example.com") is something to Find, not a setting to save yet.
@@ -1824,6 +1838,91 @@ function Settings(root) {
     toast("Disconnected. Narratarr’s key is still listed in Audiobookshelf, where you can revoke it.");
   };
   absShow();
+
+  // Users: who can sign in, and as what.
+  const userList = $("#user-list", root);
+  const renderUsers = async () => {
+    try {
+      const all = await api("/api/users");
+      userList.innerHTML = all.map((u) => `
+        <div class="user-row" data-id="${u.id}" data-name="${esc(u.username)}">
+          <span class="avatar">${esc(u.username.slice(0, 1))}</span>
+          <span class="name"><b>${esc(u.username)}</b><small>${u.id === state.user.id ? "You · " : ""}${u.role === "admin" ? "Admin" : "Listener"}</small></span>
+          <span class="tools">
+            <select class="select" data-role aria-label="Role for ${esc(u.username)}">
+              <option value="admin" ${u.role === "admin" ? "selected" : ""}>Admin</option>
+              <option value="listener" ${u.role === "listener" ? "selected" : ""}>Listener</option>
+            </select>
+            <button class="btn sm ghost" type="button" data-reset>Reset password</button>
+            <button class="btn sm ghost icon danger" type="button" data-remove aria-label="Remove ${esc(u.username)}">${I.trash}</button>
+          </span>
+        </div>`).join("");
+    } catch (err) {
+      userList.innerHTML = `<div class="rd-result bad">${esc(err.message)}</div>`;
+    }
+  };
+  userList.onchange = async (e) => {
+    const sel = e.target.closest("[data-role]");
+    if (!sel) return;
+    const row = sel.closest(".user-row");
+    try {
+      await api(`/api/users/${row.dataset.id}`, { method: "PATCH", body: { role: sel.value } });
+      if (Number(row.dataset.id) === state.user.id) return location.reload(); // you just changed what you can do
+      toast(`${row.dataset.name} is now ${sel.value === "admin" ? "an admin" : "a listener"}`, { kind: "ok" });
+    } catch (err) {
+      toast(err.message, { kind: "err" });
+    }
+    renderUsers();
+  };
+  userList.onclick = async (e) => {
+    const row = e.target.closest(".user-row");
+    if (!row) return;
+    const name = row.dataset.name;
+    if (e.target.closest("[data-reset]")) {
+      formModal({
+        title: `New password for ${name}`,
+        body: "They’ll be signed out everywhere and sign in again with this one.",
+        fields: passwordFields(),
+        confirm: "Set password",
+        onSubmit: async (f) => {
+          matching(f);
+          await api(`/api/users/${row.dataset.id}`, { method: "PATCH", body: { password: f.password.value } });
+          toast(`New password set for ${name}`, { kind: "ok" });
+        },
+      });
+    } else if (e.target.closest("[data-remove]")) {
+      const ok = await modal({ title: `Remove ${name}?`, body: "They won’t be able to sign in, and their listening progress is deleted. Books stay in the library.", confirm: "Remove", danger: true });
+      if (!ok) return;
+      try {
+        await api(`/api/users/${row.dataset.id}`, { method: "DELETE" });
+        toast(`Removed ${name}`);
+      } catch (err) {
+        toast(err.message, { kind: "err" });
+      }
+      renderUsers();
+    }
+  };
+  $("#add-user", root).onclick = () => formModal({
+    title: "Add someone",
+    body: "Give them the username and password; they can change the password themselves.",
+    fields: `
+      <div class="field"><label for="nu-name">Username</label><input class="input" id="nu-name" name="username" autocomplete="off" autocapitalize="off" spellcheck="false" /></div>
+      ${passwordFields()}
+      <div class="field"><label for="nu-role">Role</label>
+        <select class="select abs-select" id="nu-role" name="role">
+          <option value="listener">Listener: browses, requests and listens</option>
+          <option value="admin">Admin: also runs settings and users</option>
+        </select>
+      </div>`,
+    confirm: `${I.plus} Add`,
+    onSubmit: async (f) => {
+      matching(f);
+      const u = await api("/api/users", { method: "POST", body: { username: f.username.value.trim(), password: f.password.value, role: f.role.value } });
+      toast(`Added ${u.username}`, { kind: "ok" });
+      renderUsers();
+    },
+  });
+  renderUsers();
 
   return {};
 }
@@ -2184,7 +2283,155 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Accounts: the sign-in / first-run screen, and the account menu
+
+function showGate(status) {
+  const setup = status.setup;
+  document.body.classList.add("gated");
+  const gate = document.createElement("div");
+  gate.className = "gate";
+  gate.innerHTML = `
+    <form class="gate-card" autocomplete="on" novalidate>
+      <img src="/static/icon.svg" alt="" width="56" height="56" />
+      <h1>${setup ? "Welcome to Narrat<em>arr</em>" : "Sign in"}</h1>
+      <p>${setup
+        ? "Create the admin account. It runs Narratarr: settings, downloads, and who else can sign in. Add family and friends as listeners afterwards."
+        : "Narratarr needs to know who’s listening."}</p>
+      <div class="field">
+        <label for="g-user">Username</label>
+        <input class="input" id="g-user" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required />
+      </div>
+      <div class="field">
+        <label for="g-pass">Password</label>
+        <input class="input" id="g-pass" name="password" type="password" autocomplete="${setup ? "new-password" : "current-password"}" required />
+        ${setup ? `<span class="hint">At least 8 characters.</span>` : ""}
+      </div>
+      ${setup ? `<div class="field">
+        <label for="g-again">Password again</label>
+        <input class="input" id="g-again" type="password" autocomplete="new-password" required />
+      </div>` : ""}
+      ${status.setup_code_needed ? `<div class="field">
+        <label for="g-code">Setup code</label>
+        <input class="input mono" id="g-code" name="code" inputmode="numeric" placeholder="1234-5678" autocomplete="off" />
+        <span class="hint">You’re not on Narratarr’s network, so it asks for the code it printed when it started. Find it with <code>docker logs narratarr</code>, or in <code>~/.narratarr/narratarr.log</code>.</span>
+      </div>` : ""}
+      <div class="form-error" id="g-error" role="alert"></div>
+      <button class="btn primary" type="submit">${setup ? `${I.check} Create admin account` : "Sign in"}</button>
+    </form>`;
+  document.body.append(gate);
+  const form = $("form", gate);
+  $("#g-user", gate).focus();
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const err = $("#g-error", gate);
+    const body = { username: form.username.value.trim(), password: form.password.value, code: form.code?.value || "" };
+    if (setup && body.password !== $("#g-again", gate).value) { err.textContent = "The passwords don’t match."; return; }
+    const btn = $('button[type="submit"]', gate);
+    spinBtn(btn, true);
+    try {
+      await api(setup ? "/api/auth/setup" : "/api/auth/login", { method: "POST", body });
+      location.reload();
+    } catch (ex) {
+      err.textContent = ex.message;
+      spinBtn(btn, false);
+    }
+  };
+}
+
+function renderAccount() {
+  const u = state.user;
+  const btn = $("#account");
+  btn.hidden = false;
+  $("#account-avatar").textContent = u.username.slice(0, 1);
+  $("#account-name").textContent = u.username;
+  $("#account-role").textContent = u.role === "admin" ? "Admin" : "Listener";
+  btn.onclick = openAccount;
+}
+
+// A modal with fields that stays open until its action works, showing any error inside it.
+function formModal({ title, body = "", fields, confirm, danger = false, onSubmit, extra = "" }) {
+  const scrim = $("#modal");
+  scrim.hidden = false;
+  scrim.innerHTML = `
+    <form class="modal" role="dialog" aria-modal="true" aria-labelledby="fm-title" novalidate>
+      <h3 id="fm-title">${esc(title)}</h3>
+      ${body ? `<p>${body}</p>` : ""}
+      ${fields}
+      <div class="form-error" id="fm-error" role="alert" style="margin-top:14px"></div>
+      <div class="actions">
+        ${extra}
+        <button class="btn ghost" type="button" data-act="cancel">Cancel</button>
+        <button class="btn ${danger ? "danger solid" : "primary"}" type="submit">${confirm}</button>
+      </div>
+    </form>`;
+  const form = $("form", scrim);
+  const close = () => { scrim.hidden = true; scrim.innerHTML = ""; document.removeEventListener("keydown", onKey, true); };
+  const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  document.addEventListener("keydown", onKey, true);
+  scrim.onclick = (e) => { if (e.target === scrim || e.target.closest('[data-act="cancel"]')) close(); };
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = $('button[type="submit"]', form);
+    spinBtn(btn, true);
+    try {
+      if ((await onSubmit(form)) !== false) close();
+    } catch (ex) {
+      $("#fm-error", form).textContent = ex.message;
+    }
+    spinBtn(btn, false);
+  };
+  $("input, select", form)?.focus();
+  return form;
+}
+
+const passwordFields = (current = false) => `
+  ${current ? `<div class="field"><label for="pw-current">Current password</label><input class="input" id="pw-current" name="current" type="password" autocomplete="current-password" /></div>` : ""}
+  <div class="field"><label for="pw-new">New password</label><input class="input" id="pw-new" name="password" type="password" autocomplete="new-password" /><span class="hint">At least 8 characters.</span></div>
+  <div class="field"><label for="pw-again">New password again</label><input class="input" id="pw-again" name="again" type="password" autocomplete="new-password" /></div>`;
+
+function matching(form) {
+  if (form.password.value !== form.again.value) throw new Error("The new passwords don’t match.");
+}
+
+function openAccount() {
+  const u = state.user;
+  const form = formModal({
+    title: u.username,
+    body: u.role === "admin"
+      ? "Admin: runs settings, downloads and who can sign in."
+      : "Listener: browses, requests and listens. Your place in every book is your own.",
+    fields: `<h4 style="margin:22px 0 0;font-size:14px">Change your password</h4>${passwordFields(true)}`,
+    confirm: "Change password",
+    extra: `<button class="btn ghost danger" type="button" id="sign-out" style="margin-right:auto">Sign out</button>`,
+    onSubmit: async (f) => {
+      matching(f);
+      await api("/api/auth/password", { method: "PUT", body: { current: f.current.value, password: f.password.value } });
+      toast("Password changed. You’re signed out on your other devices.", { kind: "ok" });
+    },
+  });
+  $("#sign-out", form).onclick = async () => {
+    await api("/api/auth/logout", { method: "POST" }).catch(() => {});
+    location.reload();
+  };
+}
+
+window.addEventListener("narratarr:signed-out", () => {
+  if (!document.body.classList.contains("gated")) location.reload();
+});
+
 async function boot() {
+  let status;
+  try {
+    status = await api("/api/auth/status");
+  } catch (e) {
+    toast(`Couldn’t reach Narratarr: ${e.message}`, { kind: "err" });
+    return;
+  }
+  if (status.setup || !status.user) return showGate(status);
+  state.user = status.user;
+  document.body.classList.toggle("listener", state.user.role !== "admin");
+  renderAccount();
   try {
     [state.settings, state.sources, state.library, state.follows] = await Promise.all([
       api("/api/settings"),

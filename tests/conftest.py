@@ -21,6 +21,19 @@ def isolated_data(tmp_path, monkeypatch):
     return tmp_path
 
 
+ADMIN = {"id": 1, "username": "tester", "role": "admin", "created_at": 0}
+
+
+@pytest.fixture(autouse=True)
+def signed_in(request, monkeypatch):
+    """API tests run as a signed-in admin. Tests marked real_auth go through real accounts and sessions."""
+    if request.node.get_closest_marker("real_auth"):
+        return
+    from narratarr import auth
+
+    monkeypatch.setattr(auth, "current_user", lambda request: ADMIN)
+
+
 @pytest.fixture
 def fixture_html():
     return lambda name: (FIXTURES / name).read_text()
