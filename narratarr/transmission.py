@@ -71,7 +71,10 @@ class Transmission:
     async def add(self, kind: str, payload: str | bytes, tag: str = "", category: str = "") -> str:
         args = {"filename": payload} if kind == "magnet" else {"metainfo": base64.b64encode(payload).decode()}
         res = await self._call("torrent-add", args)
-        added = res.get("torrent-added") or res.get("torrent-duplicate")
+        added = res.get("torrent-added")
+        if added:  # label it so we know it's ours, and may delete its files if the user stops it
+            await self._call("torrent-set", {"ids": [added["id"]], "labels": [tag or "narratarr"]})
+        added = added or res.get("torrent-duplicate")
         if not added:
             raise TransmissionError("Transmission didn't accept the torrent.")
         return added["hashString"].lower()
@@ -100,5 +103,14 @@ class Transmission:
         detail = "Waiting for peers…" if not speed else f"Downloading in Transmission · {peers} peer{'s' * (peers != 1)}"
         return Job("downloading", progress, speed, detail)
 
-    async def delete(self, torrent_hash: str, files: bool = True) -> None:
+    async def delete(self, torrent_hash: str, files: bool = True, tag: str = "") -> None:
+        """Remove a torrent, but only one Narratarr added for this book (it carries the book's label).
+
+        A torrent the user already had, or that another book is waiting on, is left alone.
+        """
+        found = (await self._call("torrent-get", {"ids": [torrent_hash], "fields": ["labels"]})).get("torrents") or []
+        labels = {str(x) for x in ((found[0].get("labels") or []) if found else [])}
+        if tag and tag not in labels:
+            return
+        files = files and any(x.startswith("narratarr") for x in labels)
         await self._call("torrent-remove", {"ids": [torrent_hash], "delete-local-data": files})

@@ -14,19 +14,19 @@ from __future__ import annotations
 
 import asyncio
 import re
-import time
 import unicodedata
 
 import httpx
 from rapidfuzz import fuzz
 
-from . import brave
+from . import brave, config
+from .cache import Cache
 from .sources import Listing, Source
 
 ITUNES = "https://itunes.apple.com/search"
 PAGES_PER_BATCH = 2
-_cache: dict[str, tuple[float, list[dict]]] = {}
 _CACHE_SECONDS = 600
+_cache: Cache[list[dict]] = Cache(_CACHE_SECONDS, 300)
 
 
 def normalize(s: str) -> str:
@@ -75,8 +75,8 @@ async def suggestions(query: str, limit: int = 8, client: httpx.AsyncClient | No
     """Typo-tolerant title/author suggestions from Apple's audiobook catalog."""
     key = f"{normalize(query)}:{limit}"
     hit = _cache.get(key)
-    if hit and time.monotonic() - hit[0] < _CACHE_SECONDS:
-        return hit[1]
+    if hit is not None:
+        return hit
 
     params = {"term": query, "media": "audiobook", "limit": limit * 2}
     try:
@@ -104,7 +104,7 @@ async def suggestions(query: str, limit: int = 8, client: httpx.AsyncClient | No
         out.append({"title": title, "author": author, "cover_url": art})
         if len(out) >= limit:
             break
-    _cache[key] = (time.monotonic(), out)
+    _cache.set(key, out)
     return out
 
 
@@ -231,8 +231,11 @@ async def identify(release: str) -> dict | None:
     """Work out which book a release name is, from Apple's catalog: {title, author, cover_url} or None.
 
     Strict on purpose: both the title and the author must appear in the release name,
-    because a wrong match would file the book under the wrong folder.
+    because a wrong match would file the book under the wrong folder. Honors the
+    smart-search switch, since it sends the release name to Apple.
     """
+    if not config.load().smart_search:
+        return None
     words = normalize(_RELEASE_NOISE.sub(" ", clean_title(release)))
     if len(words) < 3:
         return None

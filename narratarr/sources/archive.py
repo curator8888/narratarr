@@ -11,12 +11,12 @@ APIs: https://archive.org/advancedsearch.php and https://archive.org/metadata/<i
 from __future__ import annotations
 
 import re
-import time
 from urllib.parse import quote, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 
+from ..cache import Cache
 from .base import Category, Details, Listing, Page
 
 SEARCH = "https://archive.org/advancedsearch.php"
@@ -45,7 +45,7 @@ LANGUAGES = {
 }
 
 _LUCENE_SPECIAL = re.compile(r'[+\-&|!(){}\[\]^"~*?:\\/]')
-_cache: dict[str, tuple[float, dict]] = {}
+_cache: Cache[dict] = Cache(CACHE_SECONDS, 300)
 
 
 def _first(v) -> str:
@@ -197,8 +197,8 @@ class ArchiveSource:
     async def _get_json(self, url: str, params: list | None = None) -> dict:
         key = url + repr(params)
         hit = _cache.get(key)
-        if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
-            return hit[1]
+        if hit is not None:
+            return hit
         if self._client:
             resp = await self._client.get(url, params=params)
         else:
@@ -206,9 +206,7 @@ class ArchiveSource:
                 resp = await c.get(url, params=params)
         resp.raise_for_status()
         data = resp.json()
-        if len(_cache) > 300:
-            _cache.clear()
-        _cache[key] = (time.monotonic(), data)
+        _cache.set(key, data)
         return data
 
     async def _search(self, q: str, page: int, sort: str | None) -> Page:

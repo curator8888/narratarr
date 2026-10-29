@@ -17,17 +17,18 @@ Local imports (books the user already has) are copied or moved in from a folder.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import shutil
+import threading
 import time
 import zipfile
 from pathlib import Path
 
 import httpx
 
-from . import config, db
-from . import downloaders, importer, wanted
+from . import config, db, downloaders, importer, media, wanted
 from .downloaders import ClientError
 from .realdebrid import DEAD, RealDebrid, RealDebridError
 from .sources import Details, ProwlarrError, get_source
@@ -39,6 +40,8 @@ POLL_SECONDS = 4
 AUTOMATION_SECONDS = 60  # how often to check the import folder
 AUTO_SEARCH_SECONDS = 10 * 60  # how often to look for a few Wanted books
 RD_TIMEOUT_SECONDS = 6 * 60 * 60
+CLIENT_TIMEOUT_SECONDS = 7 * 24 * 60 * 60  # a torrent with no seeds shouldn't hold a download slot forever
+MAX_COVER_BYTES = 20 << 20
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -73,27 +76,84 @@ def mapped_path(storage: str, settings: config.Settings) -> Path:
     return Path(storage)
 
 
-def take(src: Path, into: Path) -> None:
-    """Move a finished download (a folder or a single file) into our temp folder."""
-    if src.is_file():
-        shutil.move(str(src), str(into / src.name))
-        return
-    for item in src.iterdir():
-        shutil.move(str(item), str(into / item.name))
-    try:
-        src.rmdir()
-    except OSError:
-        pass  # something else is still in there; leave it be
+def take(src: Path, into: Path, stop=None) -> None:
+    """Move a finished download (a folder or a single file) into our temp folder. Resumable."""
+    importer.bring_in(src, into, True, None, stop)
 
 
-def link_into(src: Path, into: Path) -> None:
+def has_files(folder: Path) -> bool:
+    return folder.is_dir() and any(p.is_file() for p in folder.rglob("*"))
+
+
+def free_name(target: Path) -> Path:
+    """'Dune.m4b' -> 'Dune (2).m4b' if the first is taken, and so on."""
+    n = 2
+    while target.exists():
+        target = target.with_name(f"{target.stem} ({n}){target.suffix}")
+        n += 1
+    return target
+
+
+async def read_up_to(resp: httpx.Response, limit: int) -> bytes | None:
+    """The response body, or None if it's bigger than we're willing to hold in memory."""
+    chunks, size = [], 0
+    async for chunk in resp.aiter_bytes(1 << 16):
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def tmp_dir(book: dict, settings: config.Settings) -> Path:
+    # Keyed by id *and* origin, so a leftover from a reset database can't be mistaken for this book's.
+    tag = hashlib.sha1(book["source_url"].encode()).hexdigest()[:8]
+    return Path(settings.library_dir).expanduser() / ".narratarr-tmp" / f"{book['id']}-{tag}"
+
+
+def unique_destination(book: dict, settings: config.Settings) -> Path:
+    """The book's folder: the one it already lives in, or a fresh one nobody else uses.
+
+    Two books can resolve to the same folder (a template like "{author}", or two editions
+    with the same title), and the library may hold folders Narratarr never made. Sharing
+    one would mix files and let "delete files" on one book wipe another's.
+    """
+    root = Path(settings.library_dir).expanduser().resolve()
+    own = Path(book["path"]).resolve() if book.get("path") else None
+    if own and root in own.parents and own.is_dir():
+        return own  # downloading again goes back where the book already lives
+    dest = destination(book, settings)
+    taken = {Path(b["path"]).resolve() for b in db.list_books() if b["path"] and b["id"] != book["id"]}
+    base, n = dest, 2
+    while dest in taken or any(dest in t.parents for t in taken) or has_files(dest):
+        dest = base.with_name(f"{base.name} ({n})")
+        n += 1
+    return dest
+
+
+def readable_error(e: Exception) -> str:
+    """An error message fit for the UI: no request URLs (they can carry tokens)."""
+    if isinstance(e, httpx.HTTPStatusError):
+        return f"The download server answered with an error ({e.response.status_code})."
+    if isinstance(e, httpx.TimeoutException):
+        return "The download timed out. Check your connection and try again."
+    if isinstance(e, httpx.HTTPError):
+        return "Couldn't reach the download server. Check your connection and try again."
+    return str(e) or type(e).__name__
+
+
+def link_into(src: Path, into: Path, stop=None) -> None:
     """Bring a finished torrent into our temp folder without disturbing it, so it can keep seeding.
 
     Hard links cost no extra space when the library is on the same drive; otherwise we copy.
     """
     files = [src] if src.is_file() else [p for p in src.rglob("*") if p.is_file()]
     for f in files:
+        if stop is not None and stop.is_set():
+            return
         target = into / (f.name if src.is_file() else f.relative_to(src))
+        if target.exists():
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             target.hardlink_to(f)
@@ -116,6 +176,8 @@ class Worker:
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None):
         # transport is injectable so tests can fake Real-Debrid and file hosts.
         self.running: dict[int, asyncio.Task] = {}
+        self.threads: dict[int, asyncio.Future] = {}  # file work in progress, which a cancel can't interrupt
+        self.stops: dict[int, threading.Event] = {}
         self._transport = transport
         self._loop_task: asyncio.Task | None = None
         self._auto_task: asyncio.Task | None = None
@@ -137,11 +199,27 @@ class Worker:
         self._wake.set()
 
     def cancel(self, book_id: int) -> bool:
+        if book_id in self.stops:
+            self.stops[book_id].set()
         task = self.running.get(book_id)
         if task:
             task.cancel()
             return True
         return False
+
+    async def cancel_and_wait(self, book_id: int) -> None:
+        """Cancel a book's job and wait until it has really stopped touching files."""
+        self.cancel(book_id)
+        pending = [t for t in (self.running.get(book_id), self.threads.get(book_id)) if t]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _in_thread(self, book_id: int, fn, *args):
+        """Run file work in a thread. It keeps going if the task is cancelled, so track it."""
+        fut = asyncio.ensure_future(asyncio.to_thread(fn, *args, self.stops.get(book_id)))
+        self.threads[book_id] = fut
+        fut.add_done_callback(lambda _: self.threads.pop(book_id, None))
+        return await asyncio.shield(fut)
 
     async def _loop(self) -> None:
         while True:
@@ -186,12 +264,17 @@ class Worker:
         root = Path(s.import_folder).expanduser() if s.import_folder else None
         if not root or not root.is_dir():
             return 0
+        library = Path(s.library_dir).expanduser().resolve()
+        if root.resolve() == library or library in root.resolve().parents or root.resolve() in library.parents:
+            log.warning("The import folder and the library folder overlap; not watching it.")
+            return 0
+        known = {b["path"] for b in db.list_books() if b["path"]}
         queued = 0
         for found in await asyncio.to_thread(importer.scan, root):
             path = Path(found["path"])
             url = importer.url_for(path)
-            if db.get_by_url(url) or not importer.quiet_for(path, 120):
-                continue  # already handled, or still being copied in
+            if str(path) in known or db.get_by_url(url) or not importer.quiet_for(path, 120):
+                continue  # already a library book, already handled, or still being copied in
             db.insert(importer.as_book(found, "move", "queued"))
             queued += 1
         if queued:
@@ -201,9 +284,10 @@ class Worker:
     def _spawn(self, book: dict) -> None:
         book_id = book["id"]
         db.update(book_id, status="resolving", error="", detail="Starting…", progress=0)
+        self.stops[book_id] = threading.Event()
         task = asyncio.create_task(self._run(book_id))
         self.running[book_id] = task
-        task.add_done_callback(lambda _: (self.running.pop(book_id, None), self.poke()))
+        task.add_done_callback(lambda _: (self.running.pop(book_id, None), self.stops.pop(book_id, None), self.poke()))
 
     async def _run(self, book_id: int) -> None:
         try:
@@ -213,8 +297,8 @@ class Worker:
         except (
             RealDebridError, ClientError, ProwlarrError, httpx.HTTPError, ValueError, OSError, zipfile.BadZipFile
         ) as e:
-            log.warning("Book %s failed: %s", book_id, e)
-            db.update(book_id, status="failed", error=str(e) or type(e).__name__, speed=0, detail="")
+            log.warning("Book %s failed: %s", book_id, readable_error(e))
+            db.update(book_id, status="failed", error=readable_error(e), speed=0, detail="")
         except Exception as e:
             log.exception("Book %s crashed", book_id)
             db.update(book_id, status="failed", error=f"Unexpected error: {e}", speed=0, detail="")
@@ -239,8 +323,8 @@ class Worker:
         else:
             await self._process_torrent(book, source)
 
-    def _fresh_tmp(self, book_id: int, settings: config.Settings) -> Path:
-        tmp = Path(settings.library_dir).expanduser() / ".narratarr-tmp" / str(book_id)
+    def _fresh_tmp(self, book: dict, settings: config.Settings) -> Path:
+        tmp = tmp_dir(book, settings)
         if tmp.exists():
             shutil.rmtree(tmp)
         tmp.mkdir(parents=True)
@@ -273,7 +357,7 @@ class Worker:
             {"filename": f["name"].replace("/", " - "), "filesize": f.get("size", 0), "download": f["url"]}
             for f in book["files"]
         ]
-        tmp = self._fresh_tmp(book_id, settings)
+        tmp = self._fresh_tmp(book, settings)
         await self._download(book_id, files, tmp)
         await self._finish(book, tmp, settings)
 
@@ -300,7 +384,7 @@ class Worker:
 
             db.update(book_id, status="downloading", progress=0, detail="Preparing download…")
             direct = [await rd.unrestrict(link) for link in links]
-            tmp = self._fresh_tmp(book_id, settings)
+            tmp = self._fresh_tmp(book, settings)
             await self._download(book_id, direct, tmp)
 
             if settings.delete_from_rd_after:
@@ -353,8 +437,13 @@ class Worker:
         settings = config.load()
         book_id = book["id"]
         name = settings.usenet_client
+        tmp = tmp_dir(book, settings)
+        leftover = bool(book["client_job_id"]) and has_files(tmp)  # an interrupted run got this far
         async with downloaders.usenet_client(settings, self._transport) as client:
             job_id = await self._resume_job(client, book, name)
+            if not job_id and leftover:
+                job_id = ""
+                return await self._finish(book, tmp, settings, client_job_id="")
             if not job_id:
                 if not book["download_url"]:
                     raise ValueError("This release has no NZB link. Search for it again.")
@@ -369,15 +458,25 @@ class Worker:
                 db.update(book_id, download_client=name, client_job_id=job_id)
 
             db.update(book_id, status="downloading", progress=0, detail=f"Sent to {client.label}")
-            folder = await self._wait_for_client(client, book_id, job_id, settings)
-            tmp = self._fresh_tmp(book_id, settings)
-            await asyncio.to_thread(take, folder, tmp)
             try:
-                await client.forget(job_id)
-            except ClientError:
-                log.info("Couldn't clear job %s from %s's history", job_id, client.label)
+                folder = await self._wait_for_client(client, book_id, job_id, settings)
+            except ValueError:
+                if not leftover:
+                    raise
+                folder = None  # an earlier run already moved everything out of the client's folder
+            if leftover:
+                tmp.mkdir(parents=True, exist_ok=True)
+            else:
+                tmp = self._fresh_tmp(book, settings)
+            if folder is not None:
+                await self._in_thread(book_id, take, folder, tmp)
 
         await self._finish(book, tmp, settings, client_job_id="")
+        try:
+            async with downloaders.usenet_client(settings, self._transport) as client:
+                await client.forget(job_id)
+        except ClientError:
+            log.info("Couldn't clear job %s from the Usenet client's history", job_id)
 
     async def _process_torrent_client(self, book: dict, source) -> None:
         """Torrents through the user's own qBittorrent or Transmission. The torrent keeps seeding afterwards."""
@@ -394,15 +493,20 @@ class Worker:
 
             db.update(book_id, status="downloading", progress=0, detail=f"Sent to {client.label}")
             folder = await self._wait_for_client(client, book_id, job_id, settings)
-            tmp = self._fresh_tmp(book_id, settings)
+            if not (folder.is_file() and folder.suffix.lower() in media.AUDIO_TYPES) and not media.audio_files(folder):
+                raise ValueError("The torrent finished, but there are no audio files in it.")
+            tmp = self._fresh_tmp(book, settings)
             db.update(book_id, detail="Copying files from the torrent…")
-            await asyncio.to_thread(link_into, folder, tmp)
+            await self._in_thread(book_id, link_into, folder, tmp)
 
         await self._finish(book, tmp, settings)
 
     async def _wait_for_client(self, client, book_id: int, job_id: str, settings: config.Settings) -> Path:
         """Poll a download client until the job is done; returns the finished files as Narratarr sees them."""
+        started = time.monotonic()
         while True:
+            if time.monotonic() - started > CLIENT_TIMEOUT_SECONDS:
+                raise ClientError(f"{client.label} hasn't finished this download in a week. It may have no seeds.")
             job = await client.job(job_id)
             if job is None:
                 raise ClientError(f"{client.label} no longer has this download. It may have been removed there.")
@@ -425,16 +529,22 @@ class Worker:
         settings = config.load()
         book_id = book["id"]
         src = importer.path_of(book["source_url"])
-        if not src.exists():
-            raise ValueError(f"{src} isn't there any more.")
-        tmp = self._fresh_tmp(book_id, settings)
         moving = book["import_mode"] == "move"
+        # A move that was interrupted has files in the temp folder already; never wipe those.
+        tmp = tmp_dir(book, settings)
+        resumed = moving and has_files(tmp)
+        if not resumed:
+            tmp = self._fresh_tmp(book, settings)
+        if not src.exists():
+            if resumed:
+                return await self._finish(book, tmp, settings, source_url=f"{book['source_url']}#imported-{int(time.time())}")
+            raise ValueError(f"{src} isn't there any more.")
         db.update(book_id, status="downloading", progress=0, detail="Moving files in…" if moving else "Copying files…")
 
         def report(done: int, total: int, name: str) -> None:
             db.update(book_id, progress=done * 100 / max(total, 1), detail=f"{'Moving' if moving else 'Copying'} {name}")
 
-        await asyncio.to_thread(importer.bring_in, src, tmp, moving, report)
+        await self._in_thread(book_id, importer.bring_in, src, tmp, moving, report)
         # Once moved, the original path is free again for a different book dropped there later.
         extra = {"source_url": f"{book['source_url']}#imported-{int(time.time())}"} if moving else {}
         await self._finish(book, tmp, settings, **extra)
@@ -474,7 +584,7 @@ class Worker:
                 name = safe_name(f.get("filename") or f"part-{i}")
                 async with client.stream("GET", f["download"]) as resp:
                     resp.raise_for_status()
-                    with open(tmp / name, "wb") as out:
+                    with open(free_name(tmp / name), "wb") as out:
                         async for chunk in resp.aiter_bytes(1 << 16):
                             out.write(chunk)
                             done += len(chunk)
@@ -494,13 +604,18 @@ class Worker:
         for archive in list(tmp.glob("*.zip")):
             await asyncio.to_thread(extract_zip, archive, tmp)
 
-        dest = destination(book, settings)
+        dest = unique_destination(book, settings)
+        replacing = bool(book.get("path")) and Path(book["path"]).resolve() == dest  # downloading again
         dest.mkdir(parents=True, exist_ok=True)
-        for item in tmp.iterdir():
+        db.update(book["id"], path=str(dest))  # claim it, so a parallel download can't pick the same folder
+        for item in sorted(tmp.iterdir()):
             target = dest / item.name
             if target.exists():
-                shutil.rmtree(target) if target.is_dir() else target.unlink()
-            await asyncio.to_thread(shutil.move, str(item), str(target))
+                if replacing:
+                    shutil.rmtree(target) if target.is_dir() else target.unlink()
+                else:
+                    target = free_name(target)
+            await self._in_thread(book["id"], lambda a, b, _stop: shutil.move(a, b), str(item), str(target))
         shutil.rmtree(tmp, ignore_errors=True)
 
         # Audiobookshelf picks these up automatically.
@@ -508,13 +623,16 @@ class Worker:
             (dest / "desc.txt").write_text(book["description"])
         if book["narrators"]:
             (dest / "reader.txt").write_text(", ".join(book["narrators"]))
-        if book["cover_url"] and not any(dest.glob("cover.*")):
+        if book["cover_url"].startswith(("http://", "https://")) and not any(dest.glob("cover.*")):
             try:
                 async with httpx.AsyncClient(follow_redirects=True, timeout=20, transport=self._transport) as client:
-                    resp = await client.get(book["cover_url"])
-                if resp.is_success and resp.headers.get("content-type", "").startswith("image/"):
-                    ext = {"image/png": "png", "image/webp": "webp"}.get(resp.headers["content-type"].split(";")[0], "jpg")
-                    (dest / f"cover.{ext}").write_bytes(resp.content)
+                    async with client.stream("GET", book["cover_url"]) as resp:
+                        kind = resp.headers.get("content-type", "").split(";")[0]
+                        if resp.is_success and kind.startswith("image/"):
+                            data = await read_up_to(resp, MAX_COVER_BYTES)
+                            if data:
+                                ext = {"image/png": "png", "image/webp": "webp"}.get(kind, "jpg")
+                                (dest / f"cover.{ext}").write_bytes(data)
             except httpx.HTTPError:
                 pass
         await asyncio.to_thread(importer.extract_cover, dest)

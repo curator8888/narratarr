@@ -247,7 +247,8 @@ async def refresh_due() -> int:
 
 def follow_counts(f: dict, books: list[dict]) -> dict:
     if f["kind"] == "author":
-        mine = [b for b in books if normalize(f["name"]) in normalize(b["author"])]
+        name = normalize(f["name"])
+        mine = [b for b in books if name in [normalize(a) for a in re.split(r",|&| and ", b["author"] or "")]]
     else:
         mine = [b for b in books if any(s.get("asin") == f["asin"] for s in b.get("series") or [])]
     return {

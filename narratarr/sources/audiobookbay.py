@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import re
-import time
 from urllib.parse import quote_plus, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from ..cache import Cache
 from .base import Category, Details, Listing, Page
 
 USER_AGENT = (
@@ -46,7 +46,7 @@ CATEGORIES = [
 
 TIMEOUT = httpx.Timeout(15, connect=8)
 CACHE_SECONDS = 300
-_page_cache: dict[str, tuple[float, str]] = {}
+_page_cache: Cache[str] = Cache(CACHE_SECONDS, 200)
 _polite = asyncio.Semaphore(3)
 
 _POSTED_RE = re.compile(
@@ -193,8 +193,8 @@ class AudiobookBay:
 
     async def _get(self, url: str) -> str:
         hit = _page_cache.get(url)
-        if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
-            return hit[1]
+        if hit is not None:
+            return hit
         async with _polite:  # never hammer the site with more than a few requests at once
             for attempt in (1, 2):  # the site is occasionally slow; give it one more chance
                 try:
@@ -210,9 +210,7 @@ class AudiobookBay:
                     if attempt == 2:
                         raise
         resp.raise_for_status()
-        if len(_page_cache) > 300:
-            _page_cache.clear()
-        _page_cache[url] = (time.monotonic(), resp.text)
+        _page_cache.set(url, resp.text)
         return resp.text
 
     async def latest(self, page: int = 1, category: str | None = None) -> Page:

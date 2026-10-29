@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import hmac
+import ipaddress
 import os
 import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Response
@@ -21,7 +23,7 @@ from . import audible, brave, config, db, downloaders, importer, media, search, 
 from .downloaders import ClientError
 from .realdebrid import RealDebrid, RealDebridError
 from .sources import ORDER, Prowlarr, ProwlarrError, all_sources, get_source, source_for_url
-from .worker import Worker
+from .worker import Worker, has_files, readable_error, tmp_dir
 
 STATIC = Path(__file__).parent / "static"
 
@@ -31,6 +33,7 @@ async def lifespan(app: FastAPI):
     db.init()
     worker = Worker()
     app.state.worker = worker
+    app.state.tasks = set()
     worker.start()
     yield
     await worker.stop()
@@ -47,6 +50,62 @@ async def revalidate_static(request, call_next):
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+# GETs that cost something (an indexer or Brave query) get the same protection as writes.
+COSTLY_GETS = ("/api/discover", "/api/suggest", "/api/authors/search")
+
+
+def host_allowed(host: str) -> bool:
+    """Only answer to names that can't be hijacked through DNS rebinding.
+
+    A malicious website can point its own domain at 127.0.0.1 and then talk to this app
+    as if it were same-origin. IP addresses, plain machine names and local-only domains
+    can't be used that way; anything else must be listed in NARRATARR_HOSTS.
+    """
+    name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host  # drop a :port, keep IPv6
+    name = name.strip("[]").lower()
+    if not name:
+        return False
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        pass
+    if "." not in name or name.endswith((".local", ".lan", ".home", ".internal", ".home.arpa", ".ts.net")):
+        return True
+    extra = {h.strip().lower() for h in os.environ.get("NARRATARR_HOSTS", "").split(",") if h.strip()}
+    return name in extra or any(name.endswith("." + h.lstrip("*.")) for h in extra if h.startswith("*."))
+
+
+def cross_site(request) -> bool:
+    """Whether a browser is making this request on behalf of another website."""
+    site = request.headers.get("sec-fetch-site", "")
+    if site:  # modern browsers say outright
+        return site in ("cross-site", "same-site")
+    origin = request.headers.get("origin", "")
+    if not origin:
+        return False  # curl, scripts, old browsers' GETs
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+    return urlparse(origin).netloc.lower() != host.split(",")[0].strip().lower()
+
+
+@app.middleware("http")
+async def same_site_only(request, call_next):
+    """Refuse requests that a *website* in the user's browser sends here, and unknown hostnames.
+
+    Nothing on another site should be able to start downloads, delete books, move folders,
+    or spend the user's indexer and Brave quotas on this machine.
+    """
+    if request.url.path != "/api/health" and not host_allowed(request.headers.get("host", "")):
+        return Response(
+            "Narratarr doesn't answer to this hostname. Open it by IP address or machine name, "
+            "or add the name to NARRATARR_HOSTS.", status_code=421,
+        )
+    guarded = request.method in ("POST", "PUT", "PATCH", "DELETE") or request.url.path.startswith(COSTLY_GETS)
+    if guarded and cross_site(request):
+        return Response("Requests from other websites aren't allowed.", status_code=403)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -261,8 +320,15 @@ async def _add_wanted(url: str, search_now: bool) -> dict:
         raise HTTPException(404, "Audible doesn't have that book any more.")
     book = wanted.add_wanted(b) or wanted.in_library(asin, b["title"], b["author"]) or db.get_by_url(b["url"])
     if search_now and book["status"] == "wanted" and book["source"] == "audible":
-        asyncio.create_task(_search_in_background(book["id"]))
+        _background(_search_in_background(book["id"]))
     return book
+
+
+def _background(coro) -> None:
+    """Run a coroutine in the background, keeping a reference so it can't be garbage-collected mid-way."""
+    task = asyncio.create_task(coro)
+    app.state.tasks.add(task)
+    task.add_done_callback(app.state.tasks.discard)
 
 
 async def _search_in_background(book_id: int) -> None:
@@ -270,7 +336,7 @@ async def _search_in_background(book_id: int) -> None:
         if await wanted.search_and_grab(db.get(book_id)):
             _worker().poke()
     except Exception as e:
-        db.update(book_id, search_note=str(e) or "The search failed.")
+        db.update(book_id, search_note=readable_error(e))
 
 
 def _get_or_404(book_id: int) -> dict:
@@ -312,7 +378,7 @@ async def _drop_from_client(book: dict) -> None:
                 await client.delete(book["client_job_id"])
         elif name in ("qbittorrent", "transmission"):
             async with downloaders.torrent_client(s, name=name) as client:
-                await client.delete(book["client_job_id"], files=True)
+                await client.delete(book["client_job_id"], files=True, tag=f"narratarr-{book['id']}")
     except ClientError:
         pass
     db.update(book["id"], client_job_id="")
@@ -321,7 +387,7 @@ async def _drop_from_client(book: dict) -> None:
 @app.post("/api/library/{book_id}/stop")
 async def stop(book_id: int):
     book = _get_or_404(book_id)
-    _worker().cancel(book_id)
+    await _worker().cancel_and_wait(book_id)
     await _drop_from_client(book)
     db.update(book_id, status="wanted", speed=0, progress=0, detail="")
     return db.get(book_id)
@@ -330,15 +396,49 @@ async def stop(book_id: int):
 @app.delete("/api/library/{book_id}")
 async def remove(book_id: int, delete_files: bool = False):
     book = _get_or_404(book_id)
-    _worker().cancel(book_id)
+    await _worker().cancel_and_wait(book_id)
     await _drop_from_client(book)
+    settings = config.load()
     if delete_files and book["path"]:
-        root = Path(config.load().library_dir).expanduser().resolve()
+        root = Path(settings.library_dir).expanduser().resolve()
         path = Path(book["path"]).resolve()
-        if root in path.parents and path.exists():
+        others = [Path(b["path"]).resolve() for b in db.list_books() if b["path"] and b["id"] != book_id]
+        shared = any(o == path or path in o.parents for o in others)
+        # Only ever delete inside the library, and never a folder another book also lives in.
+        if root in path.parents and path.exists() and not shared:
             shutil.rmtree(path, ignore_errors=True)
+    kept = await asyncio.to_thread(_clear_tmp, book, settings)
     db.delete(book_id)
-    return {"ok": True}
+    return {"ok": True, "kept": kept}
+
+
+def _clear_tmp(book: dict, settings: config.Settings) -> str:
+    """Drop a removed book's temp folder, unless it holds files that exist nowhere else.
+
+    A move-style import or a Usenet download that was stopped part-way has the user's only
+    copy sitting in there. Those go back where they came from, or to a "recovered" folder.
+    """
+    tmp = tmp_dir(book, settings)
+    came_from_elsewhere = book["import_mode"] == "move" or book["download_client"] in downloaders.USENET_CLIENTS
+    if not (has_files(tmp) and came_from_elsewhere):
+        shutil.rmtree(tmp, ignore_errors=True)
+        return ""
+    target = None
+    if book["import_mode"] == "move":
+        original = importer.path_of(book["source_url"].split("#")[0])
+        if not original.exists():
+            files = [p for p in tmp.rglob("*") if p.is_file()]
+            if original.suffix and len(files) == 1:  # it was a single loose file
+                original.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(files[0]), str(original))
+                shutil.rmtree(tmp, ignore_errors=True)
+                return str(original)
+            target = original
+    if target is None:
+        target = tmp.parent / f"recovered-{book['id']}-{int(time.time())}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(tmp), str(target))
+    return str(target)
 
 
 # ---- player ---------------------------------------------------------------
@@ -543,7 +643,7 @@ async def add_follow(body: Follow):
     except audible.AudibleError as e:
         raise HTTPException(502, str(e))
     if added:
-        asyncio.create_task(_auto_search_now())
+        _background(_auto_search_now())
     return {**f, "known": len(f["known"]), "added": added}
 
 
@@ -588,7 +688,7 @@ async def want_all(follow_id: int):
     detail = await follow_detail(follow_id)
     added = sum(1 for b in detail["books"] if not b["library"] and wanted.add_wanted(b))
     if added:
-        asyncio.create_task(_auto_search_now())
+        _background(_auto_search_now())
     return {"added": added, "name": f["name"]}
 
 
@@ -615,7 +715,10 @@ async def get_settings():
 
 @app.put("/api/settings")
 async def put_settings(changes: dict):
-    return config.update(changes).public()
+    try:
+        return config.update(changes).public()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/settings/test-brave")
@@ -634,16 +737,6 @@ async def test_prowlarr():
     try:
         return await Prowlarr(s.prowlarr_url, s.prowlarr_api_key).status()
     except ProwlarrError as e:
-        raise HTTPException(400, str(e))
-
-
-@app.post("/api/settings/test-sabnzbd")
-async def test_sabnzbd():
-    s = config.load()
-    try:
-        async with SABnzbd(s.sabnzbd_url, s.sabnzbd_api_key) as sab:
-            return {"version": await sab.version()}
-    except SABnzbdError as e:
         raise HTTPException(400, str(e))
 
 

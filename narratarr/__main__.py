@@ -34,6 +34,9 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     shown = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
     print(f"\n  Narratarr {_version()} is running → http://{shown}:{args.port}\n")
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("NARRATARR_PASSWORD"):
+        print("  Reachable from your network with no password. Anyone on it can change settings and\n"
+              "  download to this machine. Set NARRATARR_PASSWORD if that isn't just you.\n")
     uvicorn.run("narratarr.api:app", host=args.host, port=args.port, log_level="warning")
 
 

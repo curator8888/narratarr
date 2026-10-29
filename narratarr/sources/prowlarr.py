@@ -11,20 +11,21 @@ API: https://prowlarr.com/docs/api/
 from __future__ import annotations
 
 import re
-import time
 from collections import OrderedDict
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 import httpx
 
+from ..cache import Cache
 from .base import Category, Details, Page
 
 TIMEOUT = httpx.Timeout(90, connect=8)  # Prowlarr waits for every indexer to answer
+MAX_FETCH_BYTES = 32 << 20  # .torrent and .nzb files are small; anything bigger isn't one
 CACHE_SECONDS = 300
 REMEMBER = 3000  # releases kept in memory so a result can still be opened or added after the search
 
 _releases: OrderedDict[str, dict] = OrderedDict()
-_search_cache: dict[tuple, tuple[float, list[dict]]] = {}
+_search_cache: Cache[list[dict]] = Cache(CACHE_SECONDS, 200)
 
 _FORMAT_RE = re.compile(r"\b(m4b|mp3|flac|aac|m4a|ogg|opus)\b", re.I)
 _BITRATE_RE = re.compile(r"\b(\d{2,3})\s?kb(?:ps|it)?s?\b", re.I)
@@ -207,10 +208,8 @@ class Prowlarr:
 
     async def _search(self, query: str) -> list[dict]:
         key = (self.base, query.lower(), tuple(self.cats))
-        hit = _search_cache.get(key)
-        if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
-            found = hit[1]
-        else:
+        found = _search_cache.get(key)
+        if found is None:
             params = [("query", query), ("type", "search"), ("limit", "100"), *(("categories", c) for c in self.cats)]
             data = await self.request("/api/v1/search", params)
             found = [
@@ -219,7 +218,7 @@ class Prowlarr:
                 and (r.get("downloadUrl") or r.get("magnetUrl") or r.get("infoHash"))
             ]
             if found:  # an empty answer may just mean an indexer was briefly down; ask again next time
-                _search_cache[key] = (time.monotonic(), found)
+                _search_cache.set(key, found)
         for r in found:
             remember(r)
         return list(found)
@@ -238,6 +237,8 @@ async def fetch(url: str, base: str, api_key: str, transport: httpx.AsyncBaseTra
     target = with_key(url, base, api_key)
     async with httpx.AsyncClient(timeout=60, transport=transport) as client:
         for _ in range(6):
+            if not target.startswith(("http://", "https://")):
+                raise ProwlarrError("The indexer pointed somewhere Narratarr won't follow.")
             try:
                 resp = await client.get(target)
             except httpx.HTTPError:
@@ -253,6 +254,8 @@ async def fetch(url: str, base: str, api_key: str, transport: httpx.AsyncBaseTra
             if resp.status_code >= 400:
                 raise ProwlarrError(f"The indexer wouldn't hand over this release ({resp.status_code}). Try another one.")
             body = resp.content
+            if len(body) > MAX_FETCH_BYTES:
+                raise ProwlarrError("The indexer sent something far too big to be a .torrent or .nzb file.")
             head = body[:4096].lstrip().lower()
             if b"<nzb" in head:
                 return "nzb", body

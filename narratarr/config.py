@@ -7,6 +7,7 @@ import os
 import threading
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
+from urllib.parse import urlparse
 
 DATA_DIR = Path(os.environ.get("NARRATARR_DATA", Path.home() / ".narratarr"))
 SETTINGS_FILE = DATA_DIR / "settings.json"
@@ -64,7 +65,7 @@ class Settings:
         """Settings safe to send to the browser (secrets masked)."""
         d = asdict(self)
         for key in SECRETS:
-            d[key] = _mask(d[key])
+            d[key] = _mask(d[key], key)
         d["rd_configured"] = bool(self.rd_api_key)
         d["brave_configured"] = bool(self.brave_api_key)
         d["prowlarr_configured"] = bool(self.prowlarr_url and self.prowlarr_api_key)
@@ -87,13 +88,25 @@ CHOICES = {
     "torrent_client": ("realdebrid", "qbittorrent", "transmission"),
     "audible_region": ("us", "uk", "ca", "au", "in", "de", "fr", "it", "es", "jp"),
 }
+# Each service's secrets. Changing the service's address to a different host clears them, so a
+# saved key can never be sent to a machine the user didn't enter it for.
+SERVICE_SECRETS = {
+    "prowlarr_url": ("prowlarr_api_key",),
+    "sabnzbd_url": ("sabnzbd_api_key",),
+    "nzbget_url": ("nzbget_password",),
+    "qbittorrent_url": ("qbittorrent_password",),
+    "transmission_url": ("transmission_password",),
+    "audiobookshelf_url": ("audiobookshelf_token",),
+}
 # Settings that were renamed; old settings files are read with the new names.
 RENAMED = {"sabnzbd_remote_path": "path_remote", "sabnzbd_local_path": "path_local"}
 
 
-def _mask(secret: str) -> str:
+def _mask(secret: str, key: str = "") -> str:
     if not secret:
         return ""
+    if key.endswith("_password"):
+        return "•" * 12  # the tail of an API key helps tell keys apart; a password's doesn't
     return "•" * 8 + secret[-4:]
 
 
@@ -123,11 +136,20 @@ def update(changes: dict) -> Settings:
     s = load()
     with _lock:
         known = {f.name: f for f in fields(Settings)}
+        fresh = {k for k, v in changes.items() if k in SECRETS and isinstance(v, str) and v and not v.startswith("•")}
         for k, v in changes.items():
             if k not in known:
                 continue
             if k in SECRETS and isinstance(v, str) and v.startswith("•"):
                 continue
+            if k in SERVICE_SECRETS and isinstance(v, str):
+                v = v.strip().rstrip("/")
+                if v and not v.startswith(("http://", "https://")):
+                    raise ValueError(f"The {k.split('_')[0]} address must start with http:// or https://")
+                if _host(v) != _host(getattr(s, k)):
+                    for secret in SERVICE_SECRETS[k]:
+                        if secret not in fresh:
+                            setattr(s, secret, "")
             if k == "max_concurrent":
                 v = max(1, min(int(v), 8))
             elif k == "auto_search_hours":
@@ -139,7 +161,26 @@ def update(changes: dict) -> Settings:
             elif isinstance(v, str):
                 v = v.strip()
             setattr(s, k, v)
+        if s.import_folder:
+            lib, imp = Path(s.library_dir).expanduser().resolve(), Path(s.import_folder).expanduser().resolve()
+            if lib == imp or lib in imp.parents or imp in lib.parents:
+                raise ValueError("The import folder can't be inside the library folder, or contain it.")
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        SETTINGS_FILE.write_text(json.dumps(asdict(s), indent=2))
-        os.chmod(SETTINGS_FILE, 0o600)
+        _write_private(SETTINGS_FILE, json.dumps(asdict(s), indent=2))
     return s
+
+
+def _host(url: str) -> str:
+    return urlparse(url).netloc.lower() if url else ""
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Write a file only its owner can read, and never leave a half-written one behind."""
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)

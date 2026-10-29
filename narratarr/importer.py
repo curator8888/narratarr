@@ -153,23 +153,34 @@ def quiet_for(path: Path, seconds: float) -> bool:
     return time.time() - newest >= seconds
 
 
-def bring_in(src: Path, into: Path, move: bool, report=None) -> None:
-    """Copy or move a book's files into our temp folder, keeping sub-folders (discs) intact."""
+def bring_in(src: Path, into: Path, move: bool, report=None, stop=None) -> None:
+    """Copy or move a book's files into our temp folder, keeping sub-folders (discs) intact.
+
+    Safe to run again after an interruption: files already brought in are skipped.
+    `stop` is a threading.Event; set it to stop between files.
+    """
     files = [src] if src.is_file() else [p for p in src.rglob("*") if p.is_file() and not p.name.startswith(".")]
     total = sum(f.stat().st_size for f in files) or 1
     done = 0
     for f in files:
+        if stop is not None and stop.is_set():
+            return
         target = into / (f.name if src.is_file() else f.relative_to(src))
         target.parent.mkdir(parents=True, exist_ok=True)
         if report:
             report(done, total, f.name)
-        if move:
+        if target.exists() and target.stat().st_size == f.stat().st_size:
+            if move:
+                f.unlink()  # already brought in by an earlier, interrupted attempt
+        elif move:
             shutil.move(str(f), str(target))
         else:
             shutil.copy2(f, target)
         done += target.stat().st_size
     if move and src.is_dir():
-        shutil.rmtree(src, ignore_errors=True)
+        leftovers = [p for p in src.rglob("*") if p.is_file() and not p.name.startswith(".")]
+        if not leftovers:  # only the empty shell (and hidden junk) is left
+            shutil.rmtree(src, ignore_errors=True)
 
 
 def embedded_cover(book_dir: Path) -> tuple[bytes, str] | None:

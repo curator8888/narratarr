@@ -103,7 +103,10 @@ class QBittorrent:
         if state in ("error", "missingFiles"):
             return Job("failed", error=f"qBittorrent reports a problem with this torrent ({state}).")
         if progress >= 100 and state not in CHECKING:
-            return Job("completed", 100, path=t.get("content_path") or "")
+            path = t.get("content_path") or ""
+            if path and path == t.get("save_path"):  # a bare single-file torrent: name the file, not the folder
+                path = f"{path.rstrip('/')}/{t.get('name', '')}"
+            return Job("completed", 100, path=path)
         if state in CHECKING:
             return Job("processing", progress, detail="qBittorrent is checking the files…")
         if state in ("pausedDL", "stoppedDL"):
@@ -117,7 +120,16 @@ class QBittorrent:
         detail = "Waiting for peers…" if not speed else f"Downloading in qBittorrent · {seeds} seed{'s' * (seeds != 1)}"
         return Job("downloading", progress, speed, detail)
 
-    async def delete(self, torrent_hash: str, files: bool = True) -> None:
+    async def delete(self, torrent_hash: str, files: bool = True, tag: str = "") -> None:
+        """Remove a torrent, but only one Narratarr added for this book (it carries the book's tag).
+
+        A torrent the user already had, or that another book is waiting on, is left alone.
+        """
+        found = (await self._call("GET", "/api/v2/torrents/info", params={"hashes": torrent_hash})).json()
+        tags = {t.strip() for t in ((found[0].get("tags") or "") if found else "").split(",")}
+        if tag and tag not in tags:
+            return
+        files = files and any(t.startswith("narratarr-") for t in tags)
         await self._call(
             "POST", "/api/v2/torrents/delete", data={"hashes": torrent_hash, "deleteFiles": str(files).lower()}
         )

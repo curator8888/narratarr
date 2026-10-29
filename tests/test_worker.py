@@ -91,7 +91,8 @@ async def test_full_pipeline_downloads_and_organizes(isolated_data):
     assert (dest / "cover.jpg").exists()
     assert fake.selected and fake.deleted
     assert HASH in fake.magnet
-    assert not (isolated_data / "library" / ".narratarr-tmp" / str(book["id"])).exists()
+    scratch = isolated_data / "library" / ".narratarr-tmp"
+    assert not scratch.exists() or not any(scratch.iterdir())
 
 
 async def test_zip_from_real_debrid_is_extracted(isolated_data):

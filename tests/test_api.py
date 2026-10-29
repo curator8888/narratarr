@@ -66,7 +66,7 @@ def test_settings_mask_secrets(client):
 
 def test_remove_book(client):
     book = client.post("/api/library", json={"url": BOOK_URL, "download": False}).json()
-    assert client.delete(f"/api/library/{book['id']}").json() == {"ok": True}
+    assert client.delete(f"/api/library/{book['id']}").json() == {"ok": True, "kept": ""}
     assert client.get("/api/library").json() == []
 
 

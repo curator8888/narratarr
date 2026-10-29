@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import re
-import time
 
 import httpx
 
 from . import config
+from .cache import Cache
 
 TLDS = {
     "us": "com", "uk": "co.uk", "ca": "ca", "au": "com.au", "in": "in",
@@ -25,7 +25,7 @@ TIMEOUT = httpx.Timeout(20, connect=8)
 CACHE_SECONDS = 1800
 BOOK_TYPES = {"SinglePartBook", "MultiPartBook"}
 
-_cache: dict[str, tuple[float, object]] = {}
+_cache: Cache = Cache(CACHE_SECONDS, 400)
 
 
 class AudibleError(Exception):
@@ -96,8 +96,8 @@ def to_book(p: dict, r: str | None = None) -> dict:
 async def _get(url: str, params: dict | None = None, client: httpx.AsyncClient | None = None):
     key = url + repr(sorted((params or {}).items()))
     hit = _cache.get(key)
-    if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
-        return hit[1]
+    if hit is not None:
+        return hit
     try:
         if client:
             resp = await client.get(url, params=params)
@@ -111,7 +111,7 @@ async def _get(url: str, params: dict | None = None, client: httpx.AsyncClient |
     if resp.status_code >= 400:
         raise AudibleError(f"Audible's catalog returned an error ({resp.status_code}).")
     data = resp.json()
-    _cache[key] = (time.monotonic(), data)
+    _cache.set(key, data)
     return data
 
 

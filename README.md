@@ -317,6 +317,7 @@ A few things are set with environment variables instead:
 | `NARRATARR_DATA` | `~/.narratarr` (`/config` in Docker) | Settings and library database |
 | `NARRATARR_LIBRARY` | `~/Audiobooks` (`/audiobooks` in Docker) | Default library folder for new installs |
 | `NARRATARR_PASSWORD` | *(none)* | Turns on a login prompt. Any username, this password |
+| `NARRATARR_HOSTS` | *(none)* | Extra hostnames Narratarr should answer to, comma-separated (`books.example.com, *.home.example`). IP addresses, plain machine names and `.local` / `.lan` / `.home` / `.internal` / `.ts.net` names always work; anything else is refused to block DNS-rebinding attacks |
 | `PUID` / `PGID` | `1000` | Docker only: the user and group files are written as |
 
 ### Listening on your phone
@@ -324,7 +325,24 @@ A few things are set with environment variables instead:
 Start Narratarr so other devices can reach it (Docker already does), then open `http://<your-computer's-IP>:8484` on your phone while it's on the same Wi-Fi. Use **Add to Home Screen** for an app-like icon. If other people share your network, set `NARRATARR_PASSWORD`.
 
 > [!IMPORTANT]
-> Narratarr is built for your home network. Don't expose it directly to the internet. If you want remote access, put it behind a VPN such as Tailscale or WireGuard, or behind a reverse proxy with proper authentication.
+> Narratarr is built for your home network. Don't expose it directly to the internet. If you want remote access, put it behind a VPN such as Tailscale or WireGuard, or behind a reverse proxy with proper authentication, and add the proxy's hostname to `NARRATARR_HOSTS`.
+>
+> Without a password, anyone who can reach the port can change settings, download to your machine and read what's in your library. Narratarr limits the damage (pointing a service address at a new host drops that service's saved key, and other websites open in your browser can't talk to it), but on a shared network, set the password.
+
+### What leaves your machine
+
+Narratarr has no telemetry and phones nobody. These are the only outside services it contacts, and when:
+
+| Service | What it receives | When |
+| --- | --- | --- |
+| **archive.org** | Your LibriVox / Old-Time Radio searches, and the titles of Wanted books during automatic searches | Using those tabs; automatic search |
+| **Apple's audiobook search** (itunes.apple.com) | What you type in the search box, and Prowlarr release names (to work out the real title) | Only while **Smart search** is on |
+| **Audible's catalog** and **Audnexus** (api.audnex.us) | Your searches on the Audible tab, and the authors and series you follow | Using the Audible tab; following |
+| **Brave Search** | Your searches, with your Brave key | Only if you turn it on |
+| **Real-Debrid**, **Prowlarr**, **SABnzbd**, **NZBGet**, **qBittorrent**, **Transmission**, **Audiobookshelf** | Whatever each needs, with the key you entered for it | Only the ones you set up |
+| **Cover image hosts** (archive.org, Amazon's image CDN, your indexers) | Nothing but the image request, with no referrer | Your browser loads cover art directly |
+
+Fonts are bundled, so the UI itself never contacts a CDN. Torrents downloaded through **qBittorrent or Transmission** expose your IP address to other peers, as with any torrent client; Real-Debrid doesn't.
 
 <br>
 

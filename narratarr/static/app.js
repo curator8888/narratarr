@@ -158,13 +158,13 @@ async function bookAction(id, action) {
       confirm: "Remove",
       danger: true,
       extra: book?.path
-        ? `<label class="switch"><input type="checkbox" name="files"><i></i>Also delete the downloaded files</label>`
+        ? `<label class="switch"><input type="checkbox" name="files"><i></i>Also delete its files on disk${book.source === "local" ? " (the ones you imported)" : ""}</label>`
         : "",
     });
     if (!res) return false;
     if (player.book?.id === id) player.close();
-    await api(`/api/library/${id}?delete_files=${!!res.files}`, { method: "DELETE" });
-    toast("Removed from library");
+    const out = await api(`/api/library/${id}?delete_files=${!!res.files}`, { method: "DELETE" });
+    toast(out?.kept ? `Removed. Its files were kept at ${out.kept}` : "Removed from library", out?.kept ? { kind: "ok" } : {});
   } else {
     const book = state.library.find((b) => b.id === id);
     const missing = action === "download" && book && missingClient(book.source, book.protocol);
@@ -403,7 +403,7 @@ function Discover(root) {
     footer();
     const slow = setTimeout(() => {
       if (d.loading && token === d.token) {
-        sentinel.innerHTML = '<div style="display:grid;justify-items:center;gap:12px;color:var(--text-3)"><span class="spinner"></span><span>${esc(src.label)} is slow to respond. Still trying…</span></div>';
+        sentinel.innerHTML = `<div style="display:grid;justify-items:center;gap:12px;color:var(--text-3)"><span class="spinner"></span><span>${esc(src.label)} is slow to respond. Still trying…</span></div>`;
       }
     }, 6000);
     try {
@@ -1179,7 +1179,7 @@ function Settings(root) {
       </section>
 
       <section class="panel">
-        <div><h3>Torrents</h3><p class="desc">How torrents download. Real-Debrid fetches them for you, so nothing is shared from your computer. qBittorrent and Transmission download them on your own machine and keep seeding afterwards.</p></div>
+        <div><h3>Torrents</h3><p class="desc">How torrents download. Real-Debrid fetches them for you, so nothing is shared from your computer. qBittorrent and Transmission download on your own machine and keep seeding, which makes your IP address visible to other peers; many people run them behind a VPN.</p></div>
         <div class="body">
           <div class="field">
             <label>Download torrents with</label>
@@ -1308,7 +1308,7 @@ function Settings(root) {
               ${[["us", "United States"], ["uk", "United Kingdom"], ["ca", "Canada"], ["au", "Australia"], ["in", "India"], ["de", "Germany"], ["fr", "France"], ["it", "Italy"], ["es", "Spain"], ["jp", "Japan"]]
                 .map(([v, l]) => `<option value="${v}" ${s.audible_region === v ? "selected" : ""}>${l}</option>`).join("")}
             </select>
-            <span class="hint">Only used for titles, covers, series and release dates. Nothing is downloaded from Audible.</span>
+            <span class="hint">Only used for titles, covers, series and release dates. Nothing is downloaded from Audible, but what you search on the Audible tab, and the authors you follow, are sent to Audible’s and Audnexus’s public catalogs.</span>
           </div>
         </div>
       </section>
@@ -1319,7 +1319,7 @@ function Settings(root) {
           <div class="field">
             <label for="import_folder">Import folder</label>
             <input class="input mono" id="import_folder" name="import_folder" placeholder="e.g. ~/Downloads/Audiobooks to import" value="${esc(s.import_folder)}" />
-            <span class="hint">Checked every minute. A book is moved in once nothing in its folder has changed for two minutes.</span>
+            <span class="hint">Checked every minute. A book is moved in once nothing in its folder has changed for two minutes. Must be outside your library folder.</span>
           </div>
           <div><button class="btn" type="button" id="open-import">${I.down} Import books now…</button></div>
         </div>

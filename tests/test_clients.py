@@ -174,10 +174,18 @@ class FakeTransmission:
         if body["method"] == "torrent-get":
             self.polls += 1
             done = self.polls > 1
+            if body["arguments"].get("fields") == ["labels"]:
+                return httpx.Response(200, json={"result": "success", "arguments": {"torrents": [{"labels": getattr(self, "labels", [])}]}})
             t = {"hashString": HASH, "name": self.folder.name, "status": 6 if done else 4,
                  "percentDone": 1 if done else 0.3, "leftUntilDone": 0 if done else 10, "rateDownload": 500,
                  "error": 0, "downloadDir": "/data/torrents", "metadataPercentComplete": 1, "peersSendingToUs": 2}
             return httpx.Response(200, json={"result": "success", "arguments": {"torrents": [t]}})
+        if body["method"] == "torrent-set":
+            self.labels = body["arguments"].get("labels", [])
+            return httpx.Response(200, json={"result": "success", "arguments": {}})
+        if body["method"] == "torrent-remove":
+            self.removed = body["arguments"]
+            return httpx.Response(200, json={"result": "success", "arguments": {}})
         return httpx.Response(200, json={"result": "method not recognized"})
 
 
