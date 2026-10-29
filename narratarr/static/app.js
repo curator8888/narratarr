@@ -1514,11 +1514,50 @@ function Settings(root) {
       </section>
 
       <section class="panel">
-        <div><h3>Audiobookshelf</h3><p class="desc">Optional. Tells your Audiobookshelf server to rescan after each download.</p></div>
+        <div><h3>Audiobookshelf</h3><p class="desc">Optional. Books are already filed the way Audiobookshelf expects; connect it and Audiobookshelf picks up each new book as soon as it has downloaded.</p></div>
         <div class="body">
-          <div class="field"><label for="audiobookshelf_url">Server URL</label><input class="input mono" id="audiobookshelf_url" name="audiobookshelf_url" placeholder="http://localhost:13378" value="${esc(s.audiobookshelf_url)}" /></div>
-          <div class="field"><label for="audiobookshelf_token">API token</label><input class="input mono" id="audiobookshelf_token" name="audiobookshelf_token" type="password" value="${esc(s.audiobookshelf_token)}" /></div>
-          <div class="field"><label for="audiobookshelf_library_id">Library ID</label><input class="input mono" id="audiobookshelf_library_id" name="audiobookshelf_library_id" value="${esc(s.audiobookshelf_library_id)}" /></div>
+          <div class="field" id="abs-connected" hidden>
+            <label for="audiobookshelf_library_id">Library to rescan</label>
+            <div class="input-row">
+              <select class="select abs-select" id="audiobookshelf_library_id" name="audiobookshelf_library_id">
+                <option value="${esc(s.audiobookshelf_library_id)}">${s.audiobookshelf_library_id ? "Loading…" : "Choose a library"}</option>
+              </select>
+              <button class="btn" type="button" id="test-audiobookshelf">Test</button>
+            </div>
+            <span class="hint">Connected to <code id="abs-where"></code> · <a href="#" id="abs-disconnect" style="color:var(--accent)">Disconnect</a></span>
+            <div id="audiobookshelf-result"></div>
+          </div>
+
+          <div class="field" id="abs-setup">
+            <label for="audiobookshelf_url">Server</label>
+            <div class="input-row">
+              <input class="input mono" id="audiobookshelf_url" name="audiobookshelf_url" placeholder="Empty to search, or an IP or domain" value="${esc(s.audiobookshelf_url)}" />
+              <button class="btn" type="button" id="abs-find">${I.search} Find</button>
+            </div>
+            <span class="hint">Empty: looks on this computer, in Docker, then across your home network. With an address (a LAN or public IP, or a domain): finds Audiobookshelf there, trying https first.</span>
+            <div id="abs-found"></div>
+          </div>
+
+          <div class="field" id="abs-signin" hidden>
+            <label for="abs-user">Sign in to Audiobookshelf</label>
+            <div class="input-row two">
+              <input class="input" id="abs-user" placeholder="Admin username" autocomplete="username" autocapitalize="off" spellcheck="false" />
+              <input class="input" id="abs-pass" type="password" placeholder="Password" autocomplete="current-password" />
+            </div>
+            <label class="switch" id="abs-insecure" hidden><input type="checkbox" id="abs-insecure-ok"><i></i>This address is on the internet without https, so the password could be read on the way. Send it anyway.</label>
+            <div><button class="btn primary" type="button" id="abs-sign-in">${I.key} Connect</button></div>
+            <span class="hint">Used once, to create an API key called “Narratarr” in Audiobookshelf. Your password isn’t saved, and you can revoke the key in Audiobookshelf under Settings → Users → API Keys.</span>
+            <div id="abs-signin-result"></div>
+          </div>
+
+          <details class="abs-manual" id="abs-manual">
+            <summary>Paste an API key instead</summary>
+            <div class="field">
+              <label for="audiobookshelf_token">API key</label>
+              <input class="input mono" id="audiobookshelf_token" name="audiobookshelf_token" type="password" value="${esc(s.audiobookshelf_token)}" />
+              <span class="hint">For single sign-on (OpenID) accounts, or older Audiobookshelf versions. Create one in Audiobookshelf under Settings → Users → API Keys, then press Save changes.</span>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -1586,6 +1625,8 @@ function Settings(root) {
     data.check_updates = form.check_updates.checked;
     data.max_concurrent = Number(data.max_concurrent) || 1;
     data.auto_search_hours = Number(data.auto_search_hours) || 12;
+    // A bare address ("abs.example.com") is something to Find, not a setting to save yet.
+    if (data.audiobookshelf_url && !/^https?:\/\//.test(data.audiobookshelf_url.trim())) delete data.audiobookshelf_url;
     return data;
   };
 
@@ -1599,6 +1640,7 @@ function Settings(root) {
     }
     state.sources = await api("/api/sources"); // the Prowlarr tab appears once it's set up
     updateRdPill();
+    if (absConnected() === $("#abs-connected", root).hidden) absShow(); // a pasted API key just connected it
     if (!quiet) toast("Settings saved", { kind: "ok" });
   }
 
@@ -1672,6 +1714,116 @@ function Settings(root) {
     }
     spinBtn(btn, false);
   };
+
+  // Audiobookshelf: find the server, sign in once (which creates an API key), pick a library.
+  const badLine = (text) => `<div class="rd-result bad">${esc(text)}</div>`;
+  let absServer = null; // what Find last found: {url, version, ready, password_login, insecure}
+  const absConnected = () => Boolean(state.settings.audiobookshelf_url && state.settings.audiobookshelf_token);
+  const absShow = async (libs) => {
+    const on = absConnected();
+    $("#abs-connected", root).hidden = !on;
+    $("#abs-setup", root).hidden = on;
+    $("#abs-manual", root).hidden = on;
+    $("#abs-signin", root).hidden = on || !(absServer?.ready && absServer?.password_login);
+    if (!on) return;
+    $("#abs-where", root).textContent = state.settings.audiobookshelf_url;
+    try {
+      const r = libs || (await api("/api/audiobookshelf/libraries"));
+      const sel = form.audiobookshelf_library_id;
+      const known = r.libraries.some((l) => l.id === r.library_id);
+      sel.innerHTML = (known ? "" : `<option value="">Choose a library</option>`)
+        + r.libraries.map((l) => `<option value="${esc(l.id)}" ${l.id === r.library_id ? "selected" : ""}>${esc(l.name)}</option>`).join("");
+    } catch (err) {
+      $("#audiobookshelf-result", root).innerHTML = badLine(err.message);
+    }
+  };
+  const absFound = (server) => {
+    absServer = server;
+    form.audiobookshelf_url.value = server.url;
+    $("#abs-found", root).innerHTML = okLine(`Found Audiobookshelf <b>${esc(server.version)}</b> at <code>${esc(server.url)}</code>`)
+      + (server.ready ? "" : badLine("Finish setting up Audiobookshelf first: it doesn’t have an admin account yet."))
+      + (server.password_login ? "" : badLine("This server only allows single sign-on, so paste an API key below instead."));
+    $("#abs-insecure", root).hidden = !server.insecure;
+    $("#abs-insecure-ok", root).checked = false;
+    if (!server.password_login) $("#abs-manual", root).open = true;
+    absShow();
+    if (!$("#abs-signin", root).hidden) $("#abs-user", root).focus();
+  };
+
+  $("#abs-find", root).onclick = async (e) => {
+    const btn = e.currentTarget;
+    const out = $("#abs-found", root);
+    const address = form.audiobookshelf_url.value.trim();
+    absServer = null;
+    absShow();
+    spinBtn(btn, true);
+    out.innerHTML = `<span class="hint">${address ? `Looking for Audiobookshelf at ${esc(address)}…` : "Looking on this computer, in Docker, then across your home network…"}</span>`;
+    try {
+      const { servers } = await api("/api/audiobookshelf/find", { method: "POST", body: { address } });
+      if (servers.length === 1) {
+        absFound(servers[0]);
+      } else if (servers.length) {
+        out.innerHTML = `<span class="hint">Found ${servers.length} Audiobookshelf servers. Which one?</span>
+          <div class="abs-pick">${servers.map((sv, i) => `<button class="btn" type="button" data-i="${i}"><span class="mono">${esc(sv.url)}</span><small>${esc(sv.version)}</small></button>`).join("")}</div>`;
+        $$(".abs-pick [data-i]", out).forEach((b) => { b.onclick = () => absFound(servers[b.dataset.i]); });
+      } else {
+        out.innerHTML = badLine(address
+          ? `Audiobookshelf didn’t answer at ${address}. Check the address, and that this machine can reach it.`
+          : "No Audiobookshelf found nearby. Type its address and press Find.");
+      }
+    } catch (err) {
+      out.innerHTML = badLine(err.message);
+    }
+    spinBtn(btn, false);
+  };
+  form.audiobookshelf_url.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("#abs-find", root).click(); }
+  };
+
+  $("#abs-sign-in", root).onclick = async (e) => {
+    const btn = e.currentTarget;
+    const out = $("#abs-signin-result", root);
+    const insecure = Boolean(absServer?.insecure);
+    if (insecure && !$("#abs-insecure-ok", root).checked) {
+      out.innerHTML = badLine("Use an https address, or tick the box above to send the password anyway.");
+      return;
+    }
+    spinBtn(btn, true);
+    try {
+      const r = await api("/api/audiobookshelf/sign-in", {
+        method: "POST",
+        body: { url: absServer.url, username: $("#abs-user", root).value.trim(), password: $("#abs-pass", root).value, allow_insecure: insecure },
+      });
+      state.settings = r.settings;
+      form.audiobookshelf_token.value = r.settings.audiobookshelf_token;
+      absServer = null;
+      out.innerHTML = $("#abs-found", root).innerHTML = "";
+      await absShow(r);
+      toast(r.library_id ? "Connected to Audiobookshelf" : "Connected. Now pick the library Narratarr’s books go into.", { kind: "ok" });
+    } catch (err) {
+      out.innerHTML = badLine(err.message);
+    }
+    $("#abs-pass", root).value = "";
+    spinBtn(btn, false);
+  };
+  $("#abs-pass", root).onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("#abs-sign-in", root).click(); }
+  };
+
+  form.audiobookshelf_library_id.onchange = async () => {
+    $("#audiobookshelf-result", root).innerHTML = "";
+    try { await save(true); } catch (err) { toast(err.message, { kind: "err" }); }
+  };
+  tester("audiobookshelf", (r) => `Connected to Audiobookshelf ${esc(r.version)} · rescans <b>${esc(r.library)}</b> after each download`);
+  $("#abs-disconnect", root).onclick = async (e) => {
+    e.preventDefault();
+    state.settings = await api("/api/settings", { method: "PUT", body: { audiobookshelf_token: "", audiobookshelf_library_id: "" } });
+    form.audiobookshelf_token.value = "";
+    $("#audiobookshelf-result", root).innerHTML = "";
+    absShow();
+    toast("Disconnected. Narratarr’s key is still listed in Audiobookshelf, where you can revoke it.");
+  };
+  absShow();
 
   return {};
 }

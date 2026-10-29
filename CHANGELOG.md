@@ -2,6 +2,11 @@
 
 All notable changes to Narratarr. The app shows this under **Settings → Updates**.
 
+## 0.5.0 — 2026-10-29
+
+- **Connect Audiobookshelf in a click.** Press **Find** and Narratarr looks for Audiobookshelf on this computer, in Docker and across your home network, or at an address you type, public IPs and domains included. Sign in once and it creates its own API key; your password isn't saved. Pick the library from a list instead of hunting for its ID. Plain-http addresses on the internet ask before sending a password.
+- A rescan Audiobookshelf rejects (a revoked key, a deleted library) is now logged instead of silently ignored, and **Test** checks the connection.
+
 ## 0.4.1 — 2026-10-29
 
 - **Deluge** alongside qBittorrent and Transmission for torrents. Deluge's web UI has no username, only a password; torrents are labelled `narratarr-<book id>` when its Label plugin is enabled, so Narratarr only ever removes torrents it added.

@@ -20,7 +20,8 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import audible, brave, config, db, downloaders, importer, media, search, updates, wanted
+from . import audible, audiobookshelf, brave, config, db, downloaders, importer, media, search, updates, wanted
+from .audiobookshelf import Audiobookshelf, AudiobookshelfError
 from .downloaders import ClientError
 from .realdebrid import RealDebrid, RealDebridError
 from .sources import ORDER, Prowlarr, ProwlarrError, all_sources, get_source, source_for_url
@@ -801,3 +802,81 @@ async def test_rd():
         "expiration": user.get("expiration"),
         "points": user.get("points"),
     }
+
+
+# ---- Audiobookshelf -----------------------------------------------------------
+
+
+class FindServer(BaseModel):
+    address: str = ""  # empty: look on this machine, in Docker, then across the home network
+    sweep: bool = True
+
+
+@app.post("/api/audiobookshelf/find")
+async def abs_find(body: FindServer):
+    try:
+        if body.address.strip():
+            servers = await audiobookshelf.find_at(body.address)
+        else:
+            servers = await audiobookshelf.find_nearby(body.sweep)
+    except AudiobookshelfError as e:
+        raise HTTPException(400, str(e))
+    for server in servers:
+        server["public"] = await asyncio.to_thread(audiobookshelf.is_public, server["url"])
+        server["insecure"] = server["public"] and server["url"].startswith("http://")
+    return {"servers": servers}
+
+
+class SignIn(BaseModel):
+    url: str
+    username: str
+    password: str
+    allow_insecure: bool = False
+
+
+@app.post("/api/audiobookshelf/sign-in")
+async def abs_sign_in(body: SignIn):
+    """Trade the user's ABS login for an API key, once. The password is used for this request only."""
+    url = body.url.strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "The Audiobookshelf address must start with http:// or https://")
+    if not body.allow_insecure and await asyncio.to_thread(audiobookshelf.insecure, url):
+        raise HTTPException(400, "This address is on the internet without https, so your password could be read on the way.")
+    try:
+        async with Audiobookshelf(url) as server:
+            token = await server.sign_in(body.username, body.password)
+        async with Audiobookshelf(url, token) as server:
+            libraries = await server.libraries()
+    except AudiobookshelfError as e:
+        raise HTTPException(400, str(e))
+    s = config.load()
+    library_id = s.audiobookshelf_library_id
+    if url != s.audiobookshelf_url or not any(lib["id"] == library_id for lib in libraries):
+        library_id = audiobookshelf.pick_library(libraries, str(Path(s.library_dir).expanduser()))
+    s = config.update({"audiobookshelf_url": url, "audiobookshelf_token": token, "audiobookshelf_library_id": library_id})
+    return {"libraries": libraries, "library_id": library_id, "settings": s.public()}
+
+
+@app.get("/api/audiobookshelf/libraries")
+async def abs_libraries():
+    s = config.load()
+    try:
+        async with Audiobookshelf(s.audiobookshelf_url, s.audiobookshelf_token) as server:
+            return {"libraries": await server.libraries(), "library_id": s.audiobookshelf_library_id}
+    except AudiobookshelfError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/settings/test-audiobookshelf")
+async def test_audiobookshelf():
+    s = config.load()
+    try:
+        async with Audiobookshelf(s.audiobookshelf_url, s.audiobookshelf_token) as server:
+            status = await server.status()
+            libraries = await server.libraries()
+    except AudiobookshelfError as e:
+        raise HTTPException(400, str(e))
+    library = next((lib for lib in libraries if lib["id"] == s.audiobookshelf_library_id), None)
+    if not library:
+        raise HTTPException(400, "Connected, but no library is chosen. Pick the one Narratarr's books go into.")
+    return {"version": status["version"], "library": library["name"]}

@@ -767,6 +767,19 @@ img { display: block; }
 .client-fields[hidden] { display: none; }
 .input-row.two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .input-row.two .input { flex: none; }
+
+/* Audiobookshelf: found servers, the library picker, the paste-a-key fallback */
+.abs-select { flex: 1; min-width: 0; height: 44px; border-radius: 12px; font-size: 14px; color: var(--text); }
+.abs-pick { display: grid; gap: 8px; }
+.abs-pick .btn { justify-content: space-between; height: auto; min-height: 44px; padding: 10px 14px; text-align: left; }
+.abs-pick .mono { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+.abs-pick small { color: var(--text-3); font-weight: 500; }
+#abs-found, #abs-signin-result { display: grid; gap: 8px; }
+#abs-found:empty, #abs-signin-result:empty { display: none; }
+.rd-result code { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.abs-manual summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-3); width: fit-content; }
+.abs-manual summary:hover { color: var(--text-2); }
+.abs-manual[open] summary { margin-bottom: 14px; }
 .field > .segmented { align-self: flex-start; }
 
 /* Drawer: wanted state, follow buttons, release picker */

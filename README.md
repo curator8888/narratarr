@@ -76,7 +76,7 @@ No other app needed. You get chapters (including the chapter markers inside `.m4
 - Plugs into your **\*arr stack**: **Prowlarr** for search; **SABnzbd** or **NZBGet** for Usenet; **qBittorrent**, **Transmission**, **Deluge** or Real-Debrid for torrents
 - **Wanted list** that fills itself: follow **authors and series** and new releases are found and downloaded automatically
 - **Import** the audiobooks you already have, or point it at an existing Audiobookshelf library
-- Optional **Audiobookshelf** rescan after every download, so your other apps see new books right away
+- **Audiobookshelf** in a click: Narratarr finds your server (on this machine, in Docker, across your network, or at a public address), you sign in once, and it rescans after every download
 - Optional **password** for when it's reachable from your network
 - **Pluggable sources**: adding a new catalog is one small Python class
 
@@ -370,7 +370,9 @@ No. LibriVox and Old-Time Radio download directly and for free. Usenet results g
 <details>
 <summary><b>Will it work with Audiobookshelf / Plex / Prologue?</b></summary>
 
-Yes. Point those apps at the same library folder. Narratarr writes the `Author/Title` layout with `cover.jpg` and `desc.txt` that Audiobookshelf reads. Add your Audiobookshelf URL and API token in Settings and it will also trigger a library scan after each download.
+Yes. Point those apps at the same library folder. Narratarr writes the `Author/Title` layout with `cover.jpg` and `desc.txt` that Audiobookshelf reads.
+
+To have Audiobookshelf pick up new books straight away, open **Settings → Audiobookshelf** and press **Find**. Leave the address empty to look on this computer, in Docker and across your home network, or type a LAN or public IP or a domain. Then sign in with an Audiobookshelf admin account. Narratarr uses the password once, to create an API key called "Narratarr" (you can revoke it in Audiobookshelf under Settings → Users → API Keys), and never stores it. Single sign-on accounts and Audiobookshelf versions before 2.26 can paste an API key instead.
 </details>
 
 <details>

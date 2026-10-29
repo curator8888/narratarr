@@ -28,7 +28,7 @@ from pathlib import Path
 
 import httpx
 
-from . import config, db, downloaders, importer, media, wanted
+from . import audiobookshelf, config, db, downloaders, importer, media, wanted
 from .downloaders import ClientError
 from .realdebrid import DEAD, RealDebrid, RealDebridError
 from .sources import Details, ProwlarrError, get_source
@@ -641,9 +641,8 @@ class Worker:
     async def _notify_audiobookshelf(self, settings: config.Settings) -> None:
         if not (settings.audiobookshelf_url and settings.audiobookshelf_token and settings.audiobookshelf_library_id):
             return
-        url = f"{settings.audiobookshelf_url.rstrip('/')}/api/libraries/{settings.audiobookshelf_library_id}/scan"
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                await client.post(url, headers={"Authorization": f"Bearer {settings.audiobookshelf_token}"})
-        except httpx.HTTPError:
-            log.info("Audiobookshelf scan request failed")
+            async with audiobookshelf.Audiobookshelf(settings.audiobookshelf_url, settings.audiobookshelf_token) as server:
+                await server.scan(settings.audiobookshelf_library_id)
+        except audiobookshelf.AudiobookshelfError as e:
+            log.warning("Audiobookshelf didn't rescan after this download: %s", e)
