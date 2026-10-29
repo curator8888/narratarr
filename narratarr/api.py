@@ -7,6 +7,7 @@ import base64
 import hmac
 import ipaddress
 import os
+import re
 import shutil
 import time
 from contextlib import asynccontextmanager
@@ -19,7 +20,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import audible, brave, config, db, downloaders, importer, media, search, wanted
+from . import audible, brave, config, db, downloaders, importer, media, search, updates, wanted
 from .downloaders import ClientError
 from .realdebrid import RealDebrid, RealDebridError
 from .sources import ORDER, Prowlarr, ProwlarrError, all_sources, get_source, source_for_url
@@ -705,6 +706,33 @@ async def unfollow(follow_id: int, remove_wanted: bool = False):
                 db.delete(b["id"])
     db.delete_follow(follow_id)
     return {"ok": True}
+
+
+# ---- updates ------------------------------------------------------------------------
+
+
+@app.get("/api/updates")
+async def update_status(force: bool = False):
+    return await updates.status(force)
+
+
+@app.get("/api/changelog")
+async def get_changelog():
+    return {"markdown": updates.changelog(), "current": updates.current_version()}
+
+
+class Update(BaseModel):
+    version: str
+
+
+@app.post("/api/updates/apply")
+async def apply_update(body: Update):
+    if not re.fullmatch(r"\d+\.\d+\.\d+", body.version):
+        raise HTTPException(400, "That doesn't look like a version number.")
+    try:
+        return await updates.apply(body.version)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
 
 
 # ---- settings -------------------------------------------------------------

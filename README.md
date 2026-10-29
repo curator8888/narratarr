@@ -341,6 +341,7 @@ Narratarr has no telemetry and phones nobody. These are the only outside service
 | **Brave Search** | Your searches, with your Brave key | Only if you turn it on |
 | **Real-Debrid**, **Prowlarr**, **SABnzbd**, **NZBGet**, **qBittorrent**, **Transmission**, **Audiobookshelf** | Whatever each needs, with the key you entered for it | Only the ones you set up |
 | **Cover image hosts** (archive.org, Amazon's image CDN, your indexers) | Nothing but the image request, with no referrer | Your browser loads cover art directly |
+| **GitHub** (api.github.com) | Nothing but the request for the latest release | Once a day, for the update badge. Off under Settings → Updates |
 
 Fonts are bundled, so the UI itself never contacts a CDN. Torrents downloaded through **qBittorrent or Transmission** expose your IP address to other peers, as with any torrent client; Real-Debrid doesn't.
 
@@ -392,7 +393,7 @@ They're great at classic \*arr automation. Narratarr does that too (Prowlarr, do
 <details>
 <summary><b>How do I update?</b></summary>
 
-Installed with the installer: run the install command again. Docker: `docker compose pull && docker compose up -d`. uv: `uv tool upgrade narratarr`.
+Narratarr checks GitHub once a day and shows an **Update** badge in the sidebar when a new version is out, with the changes listed. Native installs (the installer's default) update themselves from there with one click and restart. Docker: `docker compose pull && docker compose up -d`. From source: `git pull && uv sync`. The full history is in [CHANGELOG.md](CHANGELOG.md).
 </details>
 
 <br>

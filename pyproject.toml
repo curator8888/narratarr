@@ -1,6 +1,6 @@
 [project]
 name = "narratarr"
-version = "0.3.2"
+version = "0.4.0"
 description = "An *arr-style audiobook manager with a built-in player: discover, download, organize and listen."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,6 +39,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["narratarr"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"CHANGELOG.md" = "narratarr/CHANGELOG.md"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

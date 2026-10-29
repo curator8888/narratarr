@@ -38,6 +38,7 @@ const state = {
   drawer: null, // { url, bookId }
   view: null,
   follows: [],
+  updates: null,
 };
 
 
@@ -710,6 +711,136 @@ function Library(root) {
 }
 
 // ---------------------------------------------------------------------------
+// Updates and What's new
+
+// Enough Markdown for release notes: headings, lists, bold, code, links. Everything is escaped first.
+function md(text) {
+  const inline = (s) => esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  const out = [];
+  let list = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    const h = /^(#{1,3})\s+(.*)/.exec(line);
+    const li = /^\s*[-*]\s+(.*)/.exec(line);
+    if (li) { if (!list) { out.push("<ul>"); list = true; } out.push(`<li>${inline(li[1])}</li>`); continue; }
+    if (list) { out.push("</ul>"); list = false; }
+    if (h) out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`);
+    else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+  }
+  if (list) out.push("</ul>");
+  return out.join("");
+}
+
+// The changelog, with versions you already have folded under the new ones.
+function changelogHTML(markdown, current) {
+  const sections = markdown.split(/^(?=## )/m);
+  return sections.map((sec) => {
+    const m = /^## (\d+\.\d+\.\d+)/.exec(sec);
+    const older = m && cmpVersion(m[1], current) <= 0;
+    return `<div class="${older ? "older" : ""}">${md(sec)}</div>`;
+  }).join("");
+}
+
+const cmpVersion = (a, b) => {
+  const pa = String(a).split(".").map(Number), pb = String(b).split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  return 0;
+};
+
+async function checkUpdates(force = false) {
+  try {
+    state.updates = await api(`/api/updates${force ? "?force=true" : ""}`);
+  } catch { return null; }
+  const pill = $("#update-pill");
+  pill.hidden = !state.updates.update_available;
+  if (state.updates.update_available) $("span", pill).textContent = `Update to ${state.updates.latest.version}`;
+  return state.updates;
+}
+$("#update-pill").onclick = () => openWhatsNew();
+
+async function openWhatsNew() {
+  const scrim = $("#modal");
+  const u = state.updates || (await checkUpdates()) || {};
+  const latest = u.latest;
+  const newer = u.update_available;
+  scrim.hidden = false;
+  scrim.innerHTML = `
+    <div class="modal whatsnew" role="dialog" aria-modal="true" aria-labelledby="wn-title">
+      <h3 id="wn-title">${newer ? `Narratarr ${esc(latest.version)} is out` : "What’s new"}</h3>
+      <div class="ver"><b>You have ${esc(u.current || "")}</b>${latest ? `<span>Latest ${esc(latest.version)}${latest.published ? ` · ${esc(latest.published)}` : ""}</span>` : ""}
+        ${latest ? `<a href="${esc(latest.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">On GitHub ↗</a>` : ""}</div>
+      <div class="notes" id="wn-notes"><span class="spinner"></span></div>
+      <div id="wn-progress"></div>
+      <div class="actions">
+        <button class="btn ghost" data-act="cancel">Close</button>
+        ${newer && u.can_self_update ? `<button class="btn primary" data-act="update">${I.down} Update now</button>` : ""}
+      </div>
+    </div>`;
+  const close = () => { scrim.hidden = true; scrim.innerHTML = ""; document.removeEventListener("keydown", onKey, true); };
+  const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  document.addEventListener("keydown", onKey, true);
+
+  const notes = $("#wn-notes", scrim);
+  try {
+    // Release notes for the newer version come from GitHub; the bundled changelog covers the rest.
+    const log = await api("/api/changelog");
+    const body = log.markdown.replace(/^[\s\S]*?(?=^## )/m, "");  // skip the preamble, start at the first version
+    let head = "";
+    if (newer && latest.notes && !body.includes(`## ${latest.version}`)) {
+      const n = latest.notes.trim();
+      head = (/^#{1,3}\s/.test(n) ? n : `## ${latest.version}\n\n${n}`) + "\n\n";
+    }
+    notes.innerHTML = changelogHTML(head + body, log.current);
+  } catch (e) {
+    notes.innerHTML = `<p>${esc(e.message)}</p>`;
+  }
+  if (newer && !u.can_self_update) {
+    const how = u.install === "docker" ? "This copy runs in Docker, so update it from the machine that runs it:"
+      : u.install === "source" ? "This copy runs from the source code. Update it in that folder:"
+      : "Update this copy by running the installer again:";
+    const cmd = u.install === "docker" ? "docker compose pull && docker compose up -d"
+      : u.install === "source" ? "git pull && uv sync"
+      : "curl -fsSL https://raw.githubusercontent.com/narratarr/narratarr/main/install.sh | bash";
+    $("#wn-progress", scrim).innerHTML = `<div class="update-progress"><div>${esc(how)}<code class="update-cmd">${esc(cmd)}</code></div></div>`;
+  }
+
+  scrim.onclick = async (e) => {
+    if (e.target === scrim || e.target.closest('[data-act="cancel"]')) return close();
+    const btn = e.target.closest('[data-act="update"]');
+    if (!btn) return;
+    spinBtn(btn, true);
+    const prog = $("#wn-progress", scrim);
+    try {
+      await api("/api/updates/apply", { method: "POST", body: { version: latest.version } });
+    } catch (err) {
+      prog.innerHTML = `<div class="update-progress bad">${esc(err.message)}</div>`;
+      spinBtn(btn, false);
+      return;
+    }
+    btn.remove();
+    prog.innerHTML = `<div class="update-progress"><span class="spinner"></span><span id="wn-detail">Starting…</span></div>`;
+    // Watch it install, then wait for the new version to come back up and reload.
+    const before = u.current;
+    const started = Date.now();
+    while (Date.now() - started < 15 * 60 * 1000) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const s = await api("/api/updates");
+        if (s.current !== before) { location.reload(); return; }
+        if (s.status === "failed") { prog.innerHTML = `<div class="update-progress bad">${esc(s.detail)}</div>`; return; }
+        $("#wn-detail", scrim).textContent = s.detail || "Working…";
+      } catch {
+        $("#wn-detail", scrim).textContent = "Restarting…";  // the old process is gone; the new one is starting
+      }
+    }
+    prog.innerHTML = `<div class="update-progress bad">That took too long. Check the log, or run the installer again.</div>`;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Import books you already have
 
 function openImport(folder = "") {
@@ -1159,6 +1290,21 @@ function Settings(root) {
       </section>
 
       <section class="panel">
+        <div><h3>Updates</h3><p class="desc">You have Narratarr <b>${esc(state.updates?.current || "")}</b>.${state.updates?.update_available ? ` Version <b>${esc(state.updates.latest.version)}</b> is out.` : state.updates?.latest ? " You’re up to date." : ""}</p></div>
+        <div class="body">
+          <div class="field">
+            <label class="switch"><input type="checkbox" name="check_updates" ${s.check_updates ? "checked" : ""}><i></i>Check for new versions</label>
+            <span class="hint">One small request a day to GitHub’s releases page. Nothing about you or your library is sent.</span>
+          </div>
+          <div class="cta-row" style="justify-content:flex-start">
+            <button class="btn" type="button" id="check-updates">${I.retry} Check now</button>
+            <button class="btn" type="button" id="whats-new">${I.list} What’s new</button>
+          </div>
+          <div id="update-result"></div>
+        </div>
+      </section>
+
+      <section class="panel">
         <div><h3>Prowlarr</h3><p class="desc">Optional. Search the indexers you’ve added to Prowlarr, and find books on your Wanted list. Results download through your Usenet or torrent client below.</p></div>
         <div class="body">
           <div class="field"><label for="prowlarr_url">Prowlarr address</label><input class="input mono" id="prowlarr_url" name="prowlarr_url" placeholder="http://localhost:9696" value="${esc(s.prowlarr_url)}" /></div>
@@ -1410,12 +1556,24 @@ function Settings(root) {
     seg.onclick = (e) => { const b = e.target.closest("[data-v]"); if (b) choose(seg.dataset.choice, b.dataset.v); };
   });
   $("#open-import", root).onclick = async () => { await save(true); openImport(form.import_folder.value); };
+  $("#whats-new", root).onclick = () => openWhatsNew();
+  $("#check-updates", root).onclick = async (e) => {
+    spinBtn(e.currentTarget, true);
+    const u = await checkUpdates(true);
+    const out = $("#update-result", root);
+    out.innerHTML = !u?.latest ? `<div class="rd-result bad">Couldn’t reach GitHub to check.</div>`
+      : u.update_available ? okLine(`Narratarr <b>${esc(u.latest.version)}</b> is out · <a href="#" id="see-new" style="color:var(--accent)">see what’s new</a>`)
+      : okLine(`You have the latest version, <b>${esc(u.current)}</b>`);
+    $("#see-new", out)?.addEventListener("click", (ev) => { ev.preventDefault(); openWhatsNew(); });
+    spinBtn(e.currentTarget, false);
+  };
 
   const collect = () => {
     const data = Object.fromEntries(new FormData(form));
     data.delete_from_rd_after = form.delete_from_rd_after.checked;
     data.smart_search = form.smart_search.checked;
     data.auto_search = form.auto_search.checked;
+    data.check_updates = form.check_updates.checked;
     data.max_concurrent = Number(data.max_concurrent) || 1;
     data.auto_search_hours = Number(data.auto_search_hours) || 12;
     return data;
@@ -1882,6 +2040,8 @@ async function boot() {
   player.onChange = () => updateDrawerLive();
   player.restore(state.library);
   setInterval(refreshLibrary, 2000);
+  checkUpdates();
+  setInterval(checkUpdates, 6 * 60 * 60 * 1000);
 }
 
 boot();

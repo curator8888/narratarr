@@ -60,6 +60,7 @@ class Settings:
     auto_search: bool = True
     auto_search_hours: int = 12
     audible_region: str = "us"
+    check_updates: bool = True  # one request a day to GitHub's releases API
 
     def public(self) -> dict:
         """Settings safe to send to the browser (secrets masked)."""
