@@ -18,7 +18,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from .match import MIN_COUNT
+from .match import MIN_COUNT, clean_query_title
 from .store import Store
 
 log = logging.getLogger("narratarr.ratings")
@@ -197,15 +197,16 @@ def enrich(item: dict, provider_obj=None, settings=None) -> dict:
     p = provider_obj if provider_obj is not None else provider(settings)
     if p is None:
         return item
+    title = clean_query_title(item.get("title") or "", item.get("source") or "")
     try:
-        rating = p.cached(item.get("title") or "", item.get("author") or "", item.get("asin") or "")
+        rating = p.cached(title, item.get("author") or "", item.get("asin") or "")
     except Exception as e:  # a ratings problem must never fail a search
         log.warning("ratings lookup failed for %r: %s", item.get("title"), e)
         return item
     if rating is not None:
         item["rating"] = rating.to_dict()
     elif p.enabled:
-        _enqueue(item.get("title") or "", item.get("author") or "", item.get("asin") or "")
+        _enqueue(title, item.get("author") or "", item.get("asin") or "")
     return item
 
 

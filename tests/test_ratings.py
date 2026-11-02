@@ -23,7 +23,7 @@ from narratarr.ratings.audnex import (
 )
 from narratarr.ratings.bookmarks_provider import BookmarksProvider
 from narratarr.ratings.goodreads import GoodreadsProvider, book_id, parse_book
-from narratarr.ratings.match import MIN_COUNT, strict_match, title_matches
+from narratarr.ratings.match import MIN_COUNT, clean_query_title, normalise, strict_match, title_matches
 from narratarr.ratings.resolver import Resolver
 from narratarr.config import parse_regions
 from narratarr.ratings.store import Store, key_for
@@ -781,3 +781,46 @@ def test_an_admin_gets_a_verdict_per_region(accounts, monkeypatch):
     nah = accounts.post("/api/settings/test-audnex-region", json={"region": "us"})
     assert nah.status_code == 200 and nah.json()["reason"] == "region unavailable"
     assert accounts.post("/api/settings/test-audnex-region", json={"region": "mars"}).status_code == 400
+
+
+# ---- LibriVox's title formatting -------------------------------------------------------------
+
+def test_a_librivox_title_loses_its_by_suffix_and_the_match_stays_strict():
+    """Both strings are real LibriVox titles from archive.org's own metadata."""
+    raw = "Alice's Adventures in Wonderland, by Lewis Carroll"
+    assert clean_query_title(raw, "librivox") == "Alice's Adventures in Wonderland"
+
+    # the strip fixes the query, not the gate: a different edition still refuses
+    assert normalise(clean_query_title(raw, "librivox")) == normalise("Alice's Adventures in Wonderland")
+    assert not title_matches(clean_query_title(raw, "librivox"), "Alice's Adventures Underground")
+    assert not title_matches(clean_query_title(raw, "librivox"), "Through the Looking-Glass")
+
+    # only LibriVox formats titles this way; every other source passes through untouched
+    assert clean_query_title(raw, "audiobookbay") == raw
+    assert clean_query_title(raw, "") == raw
+
+
+def test_a_by_suffix_only_goes_when_it_is_the_last_thing_in_the_title():
+    assert clean_query_title("The Man, by the River, by Someone Else", "librivox") == "The Man, by the River"
+    assert clean_query_title("Pride and Prejudice", "librivox") == "Pride and Prejudice"
+    assert clean_query_title("", "librivox") == ""
+    assert clean_query_title(None, "librivox") == ""
+
+
+async def test_enrich_asks_the_provider_with_the_cleaned_title(monkeypatch):
+    asked = []
+
+    class Probe:
+        name = "audnex"
+        enabled = True
+
+        def cached(self, title, author, asin=""):
+            asked.append(title)
+            return None
+
+    monkeypatch.setattr("narratarr.ratings.provider", lambda settings=None: Probe())
+    item = {"title": "Alice's Adventures in Wonderland, by Lewis Carroll",
+            "author": "Lewis Carroll", "source": "librivox"}
+    enrich(item)
+    assert asked == ["Alice's Adventures in Wonderland"], asked
+    assert "rating" in item
